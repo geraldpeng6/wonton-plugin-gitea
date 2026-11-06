@@ -5,8 +5,9 @@
 # 身份：identity_check 走完 OIDC 链后断言 Gitea 认出主人，而且是管理员（dashboard 只有管理员
 #       看得到 /-/admin 入口）。dweb / web_get 是带用户会话的请求助手。
 # 工具：Gitea 没有声明 MCP，不写 mcp_check。
-# 数据：data_write 用随机名字建一个私有仓库，data_check 升级/重装后读回核对。
-#       两个钩子都先重走一遍 OIDC（会话可能过期，钩子执行顺序不依赖 harness）。
+# 数据：data_write 建一个固定名字的私有仓库（冒烟每次起新实例，重跑幂等），
+#       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
+#       钩子执行顺序不依赖 harness）。
 
 gitea_session() { # <jar 文件>：dweb 走完 OIDC 链，Gitea 会话落在 jar 里；输出落点页面
 	dweb /user/oauth2/wonton -L -b "$1" -c "$1"
@@ -21,17 +22,18 @@ identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
 	grep -q 'href="/-/admin"' <<<"$page" || { echo "主人不是管理员（没有 /-/admin 入口）：$(head -c 200 <<<"$page")"; return 1; }
 }
 
-data_write() { # 用随机名字建一个私有仓库
-	local marker name uid out
-	marker="$(head -c12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-	printf '%s' "$marker" >"$SMOKE_STATE/gitea-data-marker"
-	name="wonton-smoke-$marker"
+data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例，不存在上次残留；重跑幂等）
+	local page uid out status
 	gitea_session "$SMOKE_JAR" | grep -qi gitea || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
-	uid="$(curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$SMOKE_WEB_URL/repo/create" |
-		grep -o 'name="uid" value="[0-9]*"' | grep -o '[0-9]*' | head -1)"
+	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
+		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
+	[[ "$status" == 200 ]] && return 0
+	page="$(curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$SMOKE_WEB_URL/repo/create")" ||
+		{ echo "建仓库页失败"; return 1; }
+	uid="$(grep -o 'name="uid" value="[0-9]*"' <<<"$page" | grep -o '[0-9]*' | head -1)"
 	[[ -n "$uid" ]] || { echo "建仓库页取不到 uid"; return 1; }
 	out="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code} %{redirect_url}' \
-		--data-urlencode "uid=$uid" --data-urlencode "repo_name=$name" --data-urlencode 'private=true' \
+		--data-urlencode "uid=$uid" --data-urlencode 'repo_name=wonton-smoke' --data-urlencode 'private=true' \
 		"$SMOKE_WEB_URL/repo/create")"
 	case "$out" in
 	302* | 303*) : ;;
@@ -40,11 +42,9 @@ data_write() { # 用随机名字建一个私有仓库
 }
 
 data_check() { # 升级/重装后重新走 OIDC，核对仓库还在
-	local marker status
-	marker="$(cat "$SMOKE_STATE/gitea-data-marker" 2>/dev/null)"
-	[[ -n "$marker" ]] || { echo "没有 data-write 留下的标记"; return 1; }
+	local status
 	gitea_session "$SMOKE_JAR" | grep -qi gitea || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
-		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke-$marker")"
+		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
 	[[ "$status" == 200 ]] || { echo "仓库不见了（HTTP $status）"; return 1; }
 }
