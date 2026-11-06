@@ -1,78 +1,123 @@
-# 示例插件：nginx 显示一个网页，向登录的人问好。改成自己的应用见 https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md#写插件。
+# Gitea：自托管 Git 服务。网页经云吞账号单点登录（sso: oidc），git 推拉走局域网 SSH。
 services:
-  web:
-    # 镜像按摘要固定（多架构镜像写清单列表的摘要），标签只给人看。
-    image: nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
+  gitea:
+    # 上游官方镜像（gitea/gitea），按清单列表摘要固定，amd64 和 arm64 都有。
+    # 镜像以 root 启动、按 USER_UID/USER_GID 降权跑 gitea（数据目录归 PUID:PGID）；
+    # s6 同时托管 gitea web 和内建 sshd（sshd 监听 SSH_PORT，端口由它重写 sshd_config 实现）。
+    image: gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
     environment:
-      # 网关代登录：SSI 回显的 Remote-User 只信核心带来的。官方镜像启动时对 templates 目录里的
-      # *.template 做 envsubst，把下面的地址换进 nginx 配置（见 web/default.conf.template）。
-      WONTON_CORE_ADDRESS: ${WONTON_CORE_ADDRESS}
-    # 包里的文件经 configs 交给容器（核心在启动前写进去），不能用卷挂载。
-    configs:
-      - source: site
-        target: /etc/nginx/templates/default.conf.template
-      - source: page
-        target: /usr/share/nginx/html/index.html
-      - source: tokens
-        target: /usr/share/nginx/html/tokens.css
+      USER_UID: ${PUID}
+      USER_GID: ${PGID}
+      TZ: ${TZ}
+      # 跳过安装向导；SECRET_KEY 由核心生成并随数据目录长期保留，会话和 2FA 密文依赖它。
+      INSTALL_LOCK: "true"
+      SECRET_KEY: ${WONTON_SECRET_SECRET_KEY}
+      # 网页地址用网关地址，回调、克隆链接才指回自己；SSH 展示域名取局域网地址（多个地址时按列表展示）。
+      GITEA__server__ROOT_URL: ${WONTON_APP_URL}/
+      GITEA__server__SSH_DOMAIN: ${WONTON_LAN_ADDRESSES}
+      # 裸 SSH_PORT 是镜像内建 sshd 的监听端口（s6 setup 用它重写 sshd_config），
+      # GITEA__server__SSH_PORT 让 app.ini 里的展示端口跟随 compose。
+      SSH_PORT: "2222"
+      GITEA__server__SSH_PORT: "2222"
+      # 关掉本地注册：账号只能来自云吞单点登录（OIDC 自动注册），局域网设备也注册不了。
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      # 首次 OIDC 登录自动建号，用户名取 preferred_username（就是云吞用户名）；邮箱相同的老账号自动关联。
+      GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"
+      GITEA__oauth2_client__USERNAME: preferred_username
+      GITEA__oauth2_client__ACCOUNT_LINKING: auto
+      # 自动注册要求 IdP 给出 email；主人没填邮箱时安装页先要求填（引用即门槛，值本身不用）。
+      WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
+    volumes:
+      - ${WONTON_APP_DATA}:/data
+    # /api/healthz 会真的探数据库，迁移或数据库坏了时返回 5xx，不是进程活着就算健康。
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
-      start_interval: 1s
+      start_period: 300s
+      start_interval: 5s
+
+  # 一次性服务：把云吞的 OIDC 认证源登记进 Gitea 自己的数据库。保留数据重装时客户端密钥会换，
+  # 所以每次创建容器都重写这一条（幂等），不能"已存在就跳过"。要连发现文档，等 gitea 健康后再跑。
+  oidc-init:
+    image: gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
+    # 绕过镜像入口（它只服务 s6 常驻启动），直接以 PUID 跑 gitea 命令行。
+    entrypoint: ["/bin/sh", "/init/oidc.sh"]
+    user: "${PUID}:${PGID}"
+    environment:
+      WONTON_OIDC_ISSUER: ${WONTON_OIDC_ISSUER}
+      WONTON_OIDC_CLIENT_ID: ${WONTON_OIDC_CLIENT_ID}
+      WONTON_OIDC_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
+    volumes:
+      - ${WONTON_APP_DATA}:/data
+    configs:
+      - source: oidc_init
+        target: /init/oidc.sh
+    depends_on:
+      gitea:
+        condition: service_healthy
+    restart: "no"
 
 configs:
-  site:
-    file: web/default.conf.template
-  page:
-    file: web/index.html
-  tokens:
-    file: web/tokens.css
+  oidc_init:
+    file: config/oidc.sh
 
 x-wonton:
-  spec: "0.5"
-  # 换成你自己的：反向域名形式，装上以后不能改。
-  id: app.example.hello
-  version: 0.1.1
+  spec: "0.6"
+  id: io.gitea.gitea
+  version: 0.1.0
   kind: app
-  title: { zh: 你好, en: Hello }
-  description: { zh: 向登录的人问好的示例网页, en: An example page that greets whoever is signed in }
+  title: { en: Gitea }
+  description:
+    zh: 私有 Git 代码托管：网页经云吞账号登录，局域网 SSH 推拉代码
+    en: "Private Git hosting: sign in with your Wonton account, push and pull over LAN SSH"
   icon: icon.svg
   notices: [NOTICE]
-  screenshots: [screenshots/home.png]
-  author: { name: Example }
-  homepage: https://nginx.org
-  # 应用（这里是 nginx）的许可证；插件包自己的许可证写在仓库的 LICENSE 里。
-  license: BSD-2-Clause
+  screenshots: [screenshots/dashboard.png, screenshots/repo.png, screenshots/file.png]
+  author: { name: geraldpeng6, url: https://github.com/geraldpeng6 }
+  homepage: https://gitea.io
+  # Gitea 的许可证；插件包自己的许可证写在 LICENSE 里。
+  license: MIT
   tags:
-    zh: [工具]
-    en: [Tools]
+    zh: [开发, Git]
+    en: [Developer, Git]
   about:
     zh: |
-      一个示例网页：登录以后，页面会向你问好。新建插件时可以照着改。
+      自己家里的 Git 服务：建仓库、提 issue、审 PR、看代码，手机网页都能用。
+
+      网页用云吞账号打开，第一次登录自动建号；你（云吞的主人）在这个实例里是管理员。
+      本地注册是关掉的，家人要用就在云吞里换账号登录一次。自动注册需要云吞账号填过邮箱。
+
+      git 推拉不走网页，走局域网 SSH：在 Gitea 网页设置里加上你的 SSH 公钥，然后
+      git clone ssh://git@<这台主机的局域网地址>:2222/<用户>/<仓库>.git。
+      多个局域网地址时克隆地址按设置里显示的改一台。
     en: |
-      An example page: once you are signed in, the page says hello. Copy it as a starting point for a new plugin.
-  release_notes: { zh: 名字和说明更新。, en: Product name and description update. }
+      Your own Git service at home: create repos, file issues, review PRs and read code from the phone.
+
+      The web opens with your Wonton account and the account is created on first sign-in; you (the Wonton owner) are the admin of this instance. Local sign-up is disabled — family members sign in once with their Wonton account. Auto sign-up needs an email on the Wonton account.
+
+      Git push and pull go over LAN SSH, not the web: add your SSH public key in the Gitea web settings, then git clone ssh://git@<server LAN address>:2222/<user>/<repo>.git. With several LAN addresses, use the one shown in the settings.
+  release_notes: { zh: 首个版本。, en: First release. }
   webui:
-    service: web
-    port: 80
-    # 示例页回显网关注入的用户名，见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md#网关代登录sso-proxy。
-    sso: proxy
-    proxy:
-      headers:
-        Remote-User: "{user}"
-  # 能放到底栏的页面，见 https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md#底栏页面tabs。放不放由用户决定。
-  tabs:
-    - id: home
-      title: { zh: 主页, en: Home }
-      icon: tabs/home.svg
-      icon_selected: tabs/home-fill.svg
-      path: /
-      # 这个页面没做适配，用默认的 inset：页面夹在 App 的栏中间，不会被挡。
-      # 想让内容从栏下滚过，写 layout: edge-to-edge，并用 --wonton-inset-* 留出栏的位置。
-  permissions: []
-  # 上游 nginx 官方镜像，amd64 和 arm64 都有；上游没写最低内存，按本机空闲实测取整（实测约 24M，取 64M）。
+    service: gitea
+    port: 3000
+    sso: oidc
+    # 直接进 Gitea 的 OIDC 起点，App 打开就是单点登录，不用先点登录按钮。
+    path: /user/oauth2/wonton
+    oidc:
+      redirect_paths: [/user/oauth2/wonton/callback]
+  secrets:
+    secret_key:
+      generate: { bytes: 32 }
+  lan:
+    ports:
+      # git over SSH：网页端口经网关，浏览器会话带不进 git 客户端，推拉走局域网直连。
+      - { service: gitea, port: 2222 }
+  permissions:
+    # 在局域网上开放 SSH 端口，让电脑上的 git 客户端直连推拉。
+    - network.lan
+    # 自动注册要求 IdP 提供 email，用 owner.email 当安装门槛（不填邮箱装不上）。
+    - owner.identity
   requirements:
     arch: [amd64, arm64]
-    memory: 64M
+    memory: 512M
