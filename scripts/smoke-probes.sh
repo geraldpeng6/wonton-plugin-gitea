@@ -24,7 +24,9 @@ identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
 
 data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例，不存在上次残留；重跑幂等）
 	local page uid out status
-	gitea_session "$SMOKE_JAR" | grep -qi gitea || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
+	# 先存下来再匹配：管道里 grep -q 一命中就退出，curl 写剩下的内容报 23，pipefail 下整条算失败。
+	page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通"; return 1; }
+	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
 		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
 	[[ "$status" == 200 ]] && return 0
@@ -42,8 +44,10 @@ data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例
 }
 
 data_check() { # 升级/重装后重新走 OIDC，核对仓库还在
-	local status
-	gitea_session "$SMOKE_JAR" | grep -qi gitea || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
+	local page status
+	# 先存下来再匹配：管道里 grep -q 一命中就退出，curl 写剩下的内容报 23，pipefail 下整条算失败。
+	page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通"; return 1; }
+	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
 		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
 	[[ "$status" == 200 ]] || { echo "仓库不见了（HTTP $status）"; return 1; }
