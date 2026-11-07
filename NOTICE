@@ -1,29 +1,22 @@
 图标
 ====
 
-`icon.svg` 为本仓库原创，按插件规范的线条风格手写，未用图片模型生成。从模板新建的插件换成自己的图标时，这里按实际情况重写。
+`icon.svg` 来自 Gitea 的官方标志（上游仓库 `go-gitea/gitea` 的 `assets/logo.svg`，v28.3.0）：
+三个路径原样使用，不改色、不变形，按插件规范放在白色满幅底上（标志本身透明底，
+上游在白底上使用它，茶包的白色留白靠绿色杯身衬托）。
 
-许可证
-------
+版权与许可
+----------
 
-MIT License
+Gitea 的源代码和标志资源以 MIT 许可证发布（https://github.com/go-gitea/gitea/blob/main/LICENSE）。
+版权所有 (c) Gitea 项目作者。
 
-Copyright (c) 2026 Wonton plugin authors
+商标
+----
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Gitea、Gitea 标志是 Gitea 项目的商标。本插件是社区对上游项目的封装，与 Gitea 项目无官方关联，也未获得其背书。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+本插件包其余文件
+----------------
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+除上述图标外，本插件包的其余文件按仓库根目录的 LICENSE（MIT）分发。
