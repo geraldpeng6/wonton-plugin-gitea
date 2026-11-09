@@ -37,15 +37,6 @@ probes_setting() { # 状态目录 .env 里的一项设置
   sed -n "s/^$1=//p" "$SMOKE_DEV_STATE/.env" | tail -1
 }
 
-# 核心的基础域名，不是实例名：别的栈写 WONTON_BASE_DOMAIN，从主仓库抄成 WONTON_DEV_DOMAIN 的也认；都没写时按
-# 实例名兜底。
-probes_domain() {
-  local domain
-  domain="$(probes_setting WONTON_BASE_DOMAIN)"
-  [[ -n "$domain" ]] || domain="$(probes_setting WONTON_DEV_DOMAIN)"
-  printf '%s\n' "${domain:-$SMOKE_INSTANCE.wonton.localhost}"
-}
-
 # 插件钩子限时跑：函数开在子 shell 里（能看见调用方的函数和变量），超时就杀掉。
 probes_hook() { # <函数名> [秒数]
   local fn="$1" secs="${2:-300}" pid i
@@ -94,7 +85,7 @@ probes_load() { # 读插件的探针；探针里可用的变量和助手在 prob
   MCP_TOOL=""
   MCP_ARGS='{}'
   SMOKE_NOTE=""
-  export WONTON_OWNER_EMAIL="${WONTON_OWNER_EMAIL:-owner@$(probes_domain)}"
+  export WONTON_OWNER_EMAIL="${WONTON_OWNER_EMAIL:-owner@$SMOKE_INSTANCE.wonton.localhost}"
   if [[ -f "$SMOKE_DIR/scripts/smoke-probes.sh" ]]; then
     # shellcheck source=scripts/smoke-probes.sh
     . "$SMOKE_DIR/scripts/smoke-probes.sh"
@@ -106,7 +97,7 @@ probes_load() { # 读插件的探针；探针里可用的变量和助手在 prob
 probes_env() { # 实例起来以后调用；读不到用户令牌时返回 1
   local port
   port="$(probes_setting WONTON_PORT)"
-  SMOKE_BASE="http://$(probes_domain):$port"
+  SMOKE_BASE="http://$SMOKE_INSTANCE.wonton.localhost:$port"
   SMOKE_TOKEN="$(probes_dev token)" || return 1
   SMOKE_OWNER="$(docker exec "wonton-$SMOKE_INSTANCE--core" cat "$(probes_setting WONTON_DATA_DIR)/core/owner.json" 2>/dev/null | jq -r '.username // empty')"
   SMOKE_OWNER="${SMOKE_OWNER:-owner}"
@@ -117,16 +108,13 @@ probes_env() { # 实例起来以后调用；读不到用户令牌时返回 1
   SMOKE_DATA_DIR="$(probes_setting WONTON_DATA_DIR)"
   export SMOKE_DIR SMOKE_STATE SMOKE_INSTANCE SMOKE_JAR SMOKE_TOOLS SMOKE_BASE SMOKE_TOKEN SMOKE_OWNER SMOKE_OWNER_EMAIL
   export SMOKE_PLUGIN_ID SMOKE_SLUG SMOKE_SSO SMOKE_MCP SMOKE_WEBUI SMOKE_CORE SMOKE_DATA_DIR
-  export SMOKE_WEB_MAX_TIME SMOKE_API_MAX_TIME
 }
 
 # 公共助手，给探针用：dweb / web_get 带用户的会话，mcp 走同一套 dev.sh 入口，smoke_api 带用户令牌调核心。
 # SMOKE_WEB_URL 是网页入口（probes_web_url 已去尾斜杠，但可能带路径，如 SSO 登录页），web_get 把路径直接接在它后面；
 # 探针拼应用的 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port，入口的路径不掺进来）。
 dweb() { probes_dev web --jar "$SMOKE_JAR" "$@"; }
-# web_get 和 smoke_api 的秒数由调用方定（SMOKE_WEB_MAX_TIME / SMOKE_API_MAX_TIME，见 lib.sh），超时在 stderr
-# 写清地址和秒数，git grep 得到的调用处不用各自再记时间。
-web_get() { local path="$1"; shift; curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL$path" --noproxy '*' -b "$SMOKE_JAR" "$@"; }
+web_get() { local path="$1"; shift; curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$@" "$SMOKE_WEB_URL$path"; }
 mcp() {
   local sub="${1:-}"
   shift || true
@@ -136,8 +124,7 @@ mcp() {
 smoke_api() {
   local method="$1" path="$2"
   shift 2
-  curl_t "$SMOKE_API_MAX_TIME" "$SMOKE_BASE$path" --noproxy '*' -X "$method" \
-    -H "Authorization: Bearer $SMOKE_TOKEN" "$@"
+  curl -sS --noproxy '*' --fail-with-body -X "$method" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$path"
 }
 
 # 通知房间：核心以核心账号发进和主人的“Wonton”私聊。开发环境里主人不在宿主机上登录 Matrix，
@@ -246,19 +233,18 @@ probes_status_wait() { # <插件 id> <次数>：等状态变成 running healthy
 }
 
 probes_web() { # 网页打得开：网关要拒绝匿名请求，页面特征要命中应用的真实页面
-  local unauth_code unauth_evi loc body rc=0
+  local unauth_code unauth_evi loc body
   if [[ "$SMOKE_WEBUI" != 1 ]]; then
     na 网页打得开 "清单没有 webui"
     return 0
   fi
   probes_dev session >>"$PROBES_LOG" 2>&1 || say "会话建立失败（后面的探测会失败）"
-  unauth_code="$(curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL/" --noproxy '*' -o /dev/null -w '%{http_code}')" || rc=$?
+  unauth_code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 60 "$SMOKE_WEB_URL/")"
   unauth_evi="匿名返回 $unauth_code"
-  ((rc == 28)) && unauth_evi="匿名请求超时（${SMOKE_WEB_MAX_TIME} 秒）"
   case "$unauth_code" in
     401) unauth_evi="匿名 401" ;;
     301|302|303|307|308)
-      loc="$(curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL/" --noproxy '*' -o /dev/null -w '%{redirect_url}')"
+      loc="$(curl -sS --noproxy '*' -o /dev/null -w '%{redirect_url}' --max-time 60 "$SMOKE_WEB_URL/")"
       unauth_evi="匿名 $unauth_code → $loc"
       grep -q "/_wonton/login" <<<"$loc" && unauth_evi="$unauth_evi（核心登录页）" ;;
   esac
@@ -282,7 +268,7 @@ probes_identity() { # 用户身份能用：应用认出的是用户管理员
   elif [[ "$IDENTITY_NA" == 1 ]]; then
     na 用户身份能用 "${SMOKE_NOTE:-应用没有可断言的用户体系}"
   elif ! declare -F identity_check >/dev/null; then
-    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员、不管应用里有没有数据；没有用户体系就写 IDENTITY_NA=1）"
+    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员；没有用户体系就写 IDENTITY_NA=1）"
   elif identity_check >>"$PROBES_LOG" 2>&1; then
     pass 用户身份能用 "sso=$SMOKE_SSO：应用认出用户 $SMOKE_OWNER（管理员）"
   else
@@ -304,11 +290,9 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
     fail 工具Bot调得到 "没写探测：在 scripts/smoke-probes.sh 里写 MCP_TOOL=<只读工具>、MCP_ARGS 和 mcp_assert"
     return 0
   fi
+  gw="wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway"
   hermes_line="$(probes_status_wait com.nousresearch.hermes 40)" ||
     { fail 工具Bot调得到 "Hermes 不是 running healthy：$hermes_line"; return 1; }
-  # gateway 是 Bot 服务：核心把容器命名成 `<插件网络>--gateway--<Bot 名>`，旧核心没有后缀，按前缀找在跑的那个。
-  gw="$(running_container "wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway")" ||
-    { fail 工具Bot调得到 "没有在跑的 Hermes gateway 容器（wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway*）"; return 1; }
   if declare -F before_mcp >/dev/null; then
     before_mcp >>"$PROBES_LOG" 2>&1 ||
       { fail 工具Bot调得到 "工具的准备工作（before_mcp）失败，见 $PROBES_LOG 末尾：$(tail -c 200 "$PROBES_LOG" | tr '\n' ' ')"; return 0; }
