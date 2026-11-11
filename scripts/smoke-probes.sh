@@ -17,7 +17,13 @@ gitea_session() { # <jar 文件>：核心登录 + 入口页 SSO 链（同 dev.sh
 		"$base/_wonton/login" || { echo "用户令牌登录不了核心"; return 1; }
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -L -b "$1" -c "$1" -H 'Accept: text/html' \
 		"$SMOKE_WEB_URL/user/oauth2/wonton" || { echo "走不通插件网页的登录跳转"; return 1; }
-	curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/"
+	local land page
+	page="$(curl -sS --noproxy '*' -o /tmp/gitea-session.html -L -b "$1" -c "$1" -H 'Accept: text/html' \
+		-w '%{url_effective}' "$SMOKE_WEB_URL/")" || { echo "落点页拉不到"; return 1; }
+	land="$(cat /tmp/gitea-session.html)"
+	grep -q 'data-page="user/profile"' <<<"$land" ||
+		{ echo "OIDC 链没落回登录后的仪表盘（落点 $(cat /tmp/gitea-session.html 2>/dev/null; curl -sS --noproxy '*' -o /dev/null -w '%{url_effective}' -b "$1" -c "$1" "$SMOKE_WEB_URL/" || true)），title：$(grep -o '<title>[^<]*' <<<"$land" | head -1)，页面头：$(head -c 120 <<<"$land")"; return 1; }
+	printf '%s' "$land"
 }
 
 identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
