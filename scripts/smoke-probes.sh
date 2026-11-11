@@ -145,15 +145,19 @@ _owner_email() { # 主人资料里的内部邮箱（收件人用它，不猜域�
 }
 
 _mp_api() { # <路径>：调 Mailpit 的 HTTP API（basic core:<api-password>）。Mailpit 只挂在插件网络，
-  # 宿主够不着；在核心容器的网络栈里起一次性 curl 访问它。
-  local core pw dd out
-  core="wonton-${SMOKE_INSTANCE:?}--core"
-  docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
-  dd="$(probes_setting WONTON_DATA_DIR)"
-  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
-  out="$(docker exec -u 1000:1000 "$core" sh -ec \
-    command="curl -s -u \"core:$pw\" http://mailpit.wonton.internal:8025$1" 2>&1)" || { echo "Mailpit API 调不动：$out"; return 1; }
-  printf '%s' "$out"
+	# 宿主够不着；在核心容器的网络栈里起一次性 curl 访问它。数据目录从核心容器环境读，不依赖套件函数。
+	local core pw dd out
+	core="wonton-${SMOKE_INSTANCE:?}--core"
+	docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
+	dd="$(docker exec "$core" printenv WONTON_DATA_DIR 2>/dev/null)"
+	[[ -n "$dd" ]] || { echo "核心容器没有 WONTON_DATA_DIR"; return 1; }
+	pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
+	[[ -n "$pw" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
+	out="$(docker run --rm --network "container:$core" curlimages/curl:8.23.0 \
+		-s -u "core:$pw" "http://mailpit.wonton.internal:8025$1" 2>&1)"
+	if [[ "$out" == "{"* ]]; then printf '%s' "$out"; return 0; fi
+	echo "Mailpit 没给出 JSON：$(head -c 200 <<<"$out")"
+	return 1
 }
 
 extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
