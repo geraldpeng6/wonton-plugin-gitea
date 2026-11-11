@@ -28,7 +28,7 @@ gitea_session() { # <jar 文件>：核心登录 + 入口页 SSO 链（同 dev.sh
 
 identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
 	local page
-	page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链失败：$page"; return 1; }
+	page="$(gitea_session "$SMOKE_JAR")" || { echo "$page"; return 1; }
 	grep -q "href=\"/$SMOKE_OWNER\"" <<<"$page" || { echo "页面没有主人 $SMOKE_OWNER 的资料链接：$(head -c 200 <<<"$page")"; return 1; }
 	grep -q 'href="/-/admin"' <<<"$page" || { echo "主人不是管理员（没有 /-/admin 入口）：$(head -c 200 <<<"$page")"; return 1; }
 }
@@ -36,7 +36,7 @@ identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
 data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例，不存在上次残留；重跑幂等）
 	local page uid out status
 	# 先存下来再匹配：管道里 grep -q 一命中就退出，curl 写剩下的内容报 23，pipefail 下整条算失败。
-	page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通"; return 1; }
+	page="$(gitea_session "$SMOKE_JAR")" || { echo "$page"; return 1; }
 	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
 		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
@@ -57,7 +57,7 @@ data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例
 data_check() { # 升级/重装后重新走 OIDC，核对仓库还在
 	local page status
 	# 先存下来再匹配：管道里 grep -q 一命中就退出，curl 写剩下的内容报 23，pipefail 下整条算失败。
-	page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通"; return 1; }
+	page="$(gitea_session "$SMOKE_JAR")" || { echo "$page"; return 1; }
 	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
 		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
@@ -156,7 +156,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   echo "发信环境变量已注入：$rc"
 
   to="$(_owner_email)" || { echo "$to"; return 1; }
-  page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通，拿不到应用会话"; return 1; }
+  page="$(gitea_session "$SMOKE_JAR")" || { echo "拿不到应用会话：$page"; return 1; }
 
   # 真实发信测试：管理面板建号表单（session+CSRF），send_notify 让 Gitea 真发"账号已创建"邮件，
   # 收件人填主人的内部邮箱。找回密码页对已登录用户重定向（SSO 链必然登录应用），用不了。
