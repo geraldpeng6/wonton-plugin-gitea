@@ -145,9 +145,9 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   echo "发信环境变量已注入：$rc"
 
   to="$(_owner_email)" || { echo "$to"; return 1; }
-  page="$(gitea_session "$SMOKE_JAR")" || { echo "OIDC 链走不通"; return 1; }
 
-  # 真实找回密码信：POST /user/forgot_password（表单的 _csrf 与 Cookie 同值）
+  # 真实找回密码信：POST /user/forgot_password（表单的 _csrf 与 Cookie 同值）。
+  # 该页是公开页：只要核心会话过网关即可，不要先走 OIDC 登录（登录后访问会被重定向走）。
   page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/user/forgot_password")" ||
     { echo "拿不到找回密码页"; return 1; }
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
@@ -167,4 +167,12 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   _mx_wait_mail io.gitea.gitea ||
     { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的找回密码信（收件人 $to）"; return 1; }
   echo "找回密码信已投进 $to 的 Wonton 私聊"
+}
+
+sso_diag() { # 诊断：走一遍 OIDC 链，打印落点 URL 和页面 title（不动断言）
+  local land
+  land="$(curl -sS --noproxy '*' -o /tmp/sso-diag.html -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+    -w '%{url_effective} -> %{http_code}' "$SMOKE_WEB_URL/user/oauth2/wonton")" ||
+    { echo "sso_diag 链失败：$land"; return 1; }
+  echo "sso_diag 落点：$land；title：$(grep -o '<title>[^<]*' /tmp/sso-diag.html | head -1)"
 }
