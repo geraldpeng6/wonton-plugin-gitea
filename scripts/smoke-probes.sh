@@ -151,7 +151,13 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/user/forgot_password")" ||
     { echo "拿不到找回密码页"; return 1; }
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  [[ -n "$csrf" ]] || { echo "找回密码页没有 _csrf"; return 1; }
+  if [[ -z "$csrf" ]]; then
+    inic="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--init|gitea-init-1" | head -1)"
+    echo "找回密码页没有 _csrf；init 容器：${inic:-无}，日志：$(docker logs "$inic" 2>&1 | tail -8 | tr '\n' '|')"
+    echo "认证源：$(docker exec "$appc" gitea admin auth list --vertical-bars 2>&1 | tail -3 | tr '\n' '|')"
+    echo "页面开头：$(head -c 300 <<<"$page")"
+    return 1
+  fi
   rc="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
     --data-urlencode "_csrf=$csrf" --data-urlencode "email=$to" \
     "$SMOKE_WEB_URL/user/forgot_password")" || { echo "POST /user/forgot_password 失败"; return 1; }
