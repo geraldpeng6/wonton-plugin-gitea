@@ -11,24 +11,19 @@ set -eu
 
 discovery="${WONTON_OIDC_ISSUER}/.well-known/openid-configuration"
 # gitea admin auth list --vertical-bars 的行是 "ID\t|Name\t|Type\t|Enabled"。
+# 认证源存在就删了重加：update-oauth 不更新客户端密钥（升级/重装换了密钥后，旧源留着旧密钥，
+# 兑换会 invalid_client），delete+add 才保证密钥、方式和作用域都按这次注入的来。
 id="$(gitea admin auth list --vertical-bars 2>/dev/null |
 	awk -F'|' 'NR>1 {gsub(/[\t ]/,"",$1); gsub(/[\t ]/,"",$2); if ($2 == "wonton") print $1}')"
-
 if [ -n "$id" ]; then
-	gitea admin auth update-oauth --id "$id" \
-		--name wonton --provider openidConnect \
-		--key "$WONTON_OIDC_CLIENT_ID" --secret "$WONTON_OIDC_CLIENT_SECRET" \
-		--auto-discover-url "$discovery" \
-		--scopes openid --scopes profile --scopes email --scopes groups \
-		--group-claim-name groups --admin-group owner
-else
-	gitea admin auth add-oauth \
-		--name wonton --provider openidConnect \
-		--key "$WONTON_OIDC_CLIENT_ID" --secret "$WONTON_OIDC_CLIENT_SECRET" \
-		--auto-discover-url "$discovery" \
-		--scopes openid --scopes profile --scopes email --scopes groups \
-		--group-claim-name groups --admin-group owner
+	gitea admin auth delete --id "$id"
 fi
+gitea admin auth add-oauth \
+	--name wonton --provider openidConnect \
+	--key "$WONTON_OIDC_CLIENT_ID" --secret "$WONTON_OIDC_CLIENT_SECRET" \
+	--auto-discover-url "$discovery" \
+	--scopes openid --scopes profile --scopes email --scopes groups \
+	--group-claim-name groups --admin-group owner
 
 # gitea admin user list 的行是 "ID Username Email IsActive IsAdmin 2FA Type"，用户名和邮箱没有空白。
 row="$(gitea admin user list 2>/dev/null | awk -v u="$WONTON_OWNER_NAME" '$2 == u && $NF == "User"')"
