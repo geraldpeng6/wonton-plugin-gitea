@@ -179,8 +179,10 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "拿不到管理建号页"; return 1; }
   grep -q 'id="user_name"' <<<"$form" ||
     { echo "管理建号页不对（title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)）"; return 1; }
-  action="$(grep -o '<form[^>]*action="[^"]*"' <<<"$form" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
-  [[ "$action" == /* ]] || action="/-/admin/users/new"
+  # 页面有多个 form（搜索、登出、建号），取包含 id="user_name" 的那个的 action
+  action="$(awk '/<form/{f=$0} /id="user_name"/{print f; exit}' <<<"$form" |
+    grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
+  [[ "$action" == /* ]] || { echo "建号 form 取不到 action，页面 form：$(grep -c '<form' <<<"$form") 个"; return 1; }
   # Gitea 28 起表单不带 _csrf 令牌了：靠 SameSite cookie 加 Origin 校验，脚本提交带上 Origin。
   local u st
   u="wonton-mail-$(date +%s)"
@@ -193,6 +195,9 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     "$SMOKE_WEB_URL$action")" || { echo "POST $action 失败"; return 1; }
   [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] ||
     { echo "建测试用户没成功（HTTP $st）"; return 1; }
+  # 以用户列表为准确认建上了，别拿 302 当成功
+  docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | awk -v u="$u" '$2 == u {found=1} END {exit !found}' ||
+    { echo "测试用户 $u 没建成（POST 回了 $st）"; return 1; }
   # 临时用户随冒烟实例销毁，不做清理（实例是一次性的）
 
   if ! _mx_wait_mail io.gitea.gitea; then
