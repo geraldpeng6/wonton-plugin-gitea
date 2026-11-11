@@ -186,18 +186,23 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   # Gitea 28 起表单不带 _csrf 令牌了：靠 SameSite cookie 加 Origin 校验，脚本提交带上 Origin。
   local u st
   u="wonton-mail-$(date +%s)"
-  st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
+  local body
+  body="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
     -H "Origin: $SMOKE_WEB_URL" \
     --data-urlencode "user_name=$u" \
     --data-urlencode "email=$to" \
     --data-urlencode "password=Wonton-${u}aA1" \
     --data-urlencode "send_notify=on" \
     "$SMOKE_WEB_URL$action")" || { echo "POST $action 失败"; return 1; }
-  [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] ||
-    { echo "建测试用户没成功（HTTP $st）"; return 1; }
-  # 以用户列表为准确认建上了，别拿 302 当成功
-  docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | awk -v u="$u" '$2 == u {found=1} END {exit !found}' ||
-    { echo "测试用户 $u 没建成（POST 回了 $st）"; return 1; }
+  st="${body##*$'\n'}"
+  if [[ "$st" != 200* && "$st" != 302* && "$st" != 303* ]]; then
+    echo "建测试用户没成功（HTTP $st）"; return 1
+  fi
+  # 以用户列表为准确认建上了，别拿 200/302 当成功；失败时把表单页的错误带出来
+  if ! docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | awk -v u="$u" '$2 == u {found=1} END {exit !found}'; then
+    echo "测试用户 $u 没建成（POST 回了 $st）：$(grep -oE 'flash-message[^<]*<[^>]*>[^<]{0,120}|validation-error[^<]{0,120}' <<<"$body" | head -2 | tr '\n' '|')；页面 title：$(grep -o '<title>[^<]*' <<<"${body%$'\n'*}" | head -1)"
+    return 1
+  fi
   # 临时用户随冒烟实例销毁，不做清理（实例是一次性的）
 
   if ! _mx_wait_mail io.gitea.gitea; then
