@@ -196,7 +196,10 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   # 临时用户随冒烟实例销毁，不做清理（实例是一次性的）
 
   if ! _mx_wait_mail io.gitea.gitea; then
-    { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）"; return 1; }
+    local appc
+    appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$" | head -1)"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
+    return 1
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
 }
