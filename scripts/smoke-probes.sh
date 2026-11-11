@@ -154,10 +154,12 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
 
   # 真实发信测试：管理面板建号表单（session+CSRF），send_notify 让 Gitea 真发"账号已创建"邮件，
   # 收件人填主人的内部邮箱。找回密码页对已登录用户重定向（SSO 链必然登录应用），用不了。
-  form="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/admin/users/new")" ||
+  form="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/-/admin/users/new")" ||
     { echo "拿不到管理建号页"; return 1; }
   grep -q 'id="user_name"' <<<"$form" ||
     { echo "管理建号页不对（title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)）"; return 1; }
+  action="$(grep -o '<form[^>]*action="[^"]*"' <<<"$form" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
+  [[ "$action" == /* ]] || action="/-/admin/users/new"
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$form" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   [[ -n "$csrf" ]] || { echo "管理建号页没有 _csrf"; return 1; }
   local u st
@@ -168,7 +170,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     --data-urlencode "email=$to" \
     --data-urlencode "password=Wonton-${u}aA1" \
     --data-urlencode "send_notify=on" \
-    "$SMOKE_WEB_URL/admin/users/new")" || { echo "POST /admin/users/new 失败"; return 1; }
+    "$SMOKE_WEB_URL$action")" || { echo "POST $action 失败"; return 1; }
   [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] ||
     { echo "建测试用户没成功（HTTP $st）"; return 1; }
   # 临时用户随冒烟实例销毁，不做清理（实例是一次性的）
