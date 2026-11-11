@@ -12,13 +12,19 @@ on:
         required: false
         type: string
         default: ''
+      upgrade-from:
+        description: 冒烟“升级保数据”的起点（提交或 tag，只在本次运行里打本地 tag，不推）；留空取最近的 tag
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   check:
-    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@ef4f6b3e276c7fa64a1db089833a6344e59983f8
+    uses: geraldpeng6/wonton-plugin-template/.github/workflows/plugin-check.yml@4b37101b12911fc1abe79c6583329825c9e3b045
     with:
       # pull_request 和 push 触发时没有这个输入，为空，走套件默认。
       core-image: ${{ inputs.core-image }}
+      upgrade-from: ${{ inputs.upgrade-from }}
