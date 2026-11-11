@@ -176,9 +176,9 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   # 自己的仓库）发 issue 通知邮件，收件人是主人的内部邮箱。测试用户自己的地址是占位（不会被发信）。
   # 不能用建号邮件（send_notify）：它发给测试用户自己的地址，核心只放行 <用户名>@wonton.internal，
   # 会 550 拒收；而测试用户也不能占主人唯一的内部邮箱。
-  to="$(docker exec "wonton-${SMOKE_INSTANCE:?}--core" printenv WONTON_OWNER_EMAIL)" ||
-    { echo "读不到核心注入的 WONTON_OWNER_EMAIL"; return 1; }
-  [[ "$to" == *@wonton.internal ]] || { echo "核心注入的邮箱不是内部地址：$to"; return 1; }
+  to="$(docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | awk -v o="$SMOKE_OWNER" '$2 == o {print $3}')" ||
+    to=""
+  [[ "$to" == *@wonton.internal ]] || { echo "主人在 Gitea 里的邮箱不是内部地址：${to:-空}（user list 取不到就用不了通知邮件）"; return 1; }
 
   local u pw st body repo
   repo="wonton-mail-smoke-$(date +%s)"
