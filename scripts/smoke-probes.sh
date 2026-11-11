@@ -81,22 +81,6 @@ data_check() { # 升级/重装后重新走 OIDC，核对仓库还在
 
 # ---------- 内部邮箱（notify）的端到端检查 ----------
 
-_mp_api() { # <路径>：调 Mailpit 的 HTTP API（basic core:<api-password>）。Mailpit 只挂在插件网络，
-  # 宿主够不着；照核心自己 smoke-mailbox 的做法，在核心容器的网络栈里起一次性 curl 访问它。
-  local core pw dd out
-  core="wonton-${SMOKE_INSTANCE:?}--core"
-  docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
-  if declare -F read_env >/dev/null; then dd="$(read_env WONTON_DATA_DIR)"
-  elif declare -F probes_setting >/dev/null; then dd="$(probes_setting WONTON_DATA_DIR)"
-  else echo "读不到 WONTON_DATA_DIR（read_env / probes_setting 都没有）"; return 1; fi
-  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
-  [[ -n "$pw" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
-  out="$(docker run --rm --network "container:$core" curlimages/curl:8.23.0 \
-    -s -u "core:$pw" "http://mailpit.wonton.internal:8025$1" 2>&1)"
-  if [[ "$out" == "{"* ]]; then printf '%s' "$out"; return 0; fi
-  echo "Mailpit 没给出 JSON：$(head -c 200 <<<"$out")"
-  return 1
-}
 
 _mp_wait() { # <jq 参数…> [轮数=20]：轮询 Mailpit 信箱直到过滤命中。参数原样交给 jq（--arg 键 值、过滤串）；
   # 最后一个参数是纯数字时取作轮数。
@@ -160,6 +144,18 @@ _owner_email() { # 主人资料里的内部邮箱（收件人用它，不猜域�
   jq -er '.email // empty' <<<"$me" || { echo "主人资料里没有邮箱：$me"; return 1; }
 }
 
+_mp_api() { # <路径>：调 Mailpit 的 HTTP API（basic core:<api-password>）。Mailpit 只挂在插件网络，
+  # 宿主够不着；在核心容器的网络栈里起一次性 curl 访问它。
+  local core pw dd out
+  core="wonton-${SMOKE_INSTANCE:?}--core"
+  docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
+  dd="$(probes_setting WONTON_DATA_DIR)"
+  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
+  out="$(docker exec -u 1000:1000 "$core" sh -ec \
+    command="curl -s -u \"core:$pw\" http://mailpit.wonton.internal:8025$1" 2>&1)" || { echo "Mailpit API 调不动：$out"; return 1; }
+  printf '%s' "$out"
+}
+
 extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
   local appc rc to page
   appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
@@ -198,9 +194,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   if ! _mx_wait_mail io.gitea.gitea; then
     local appc
     appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$" | head -1)"
-    local corec
-    corec="$(docker ps --format '{{.Names}}' | grep -E -- "--core$" | head -1)"
-    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')；核心日志：$(docker logs "$corec" 2>&1 | grep -iaE 'smtp|mail|投递|拒收|owner@' | tail -10 | tr '\n' '|')"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱现在：$(_mp_api '/api/v1/messages?limit=10' 2>/dev/null | jq -c '[.messages[] | {to: [.To[].Address], subject}]' 2>/dev/null | head -c 300)；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
     return 1
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
