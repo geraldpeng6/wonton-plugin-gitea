@@ -215,7 +215,11 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
       'addr="$(printenv GITEA__mailer__SMTP_ADDR)"; nc -zv -w 3 "$addr" 25 2>&1 || { getent hosts "$addr" || echo "DNS 解析不了 $addr"; }' 2>&1 | head -c 120)"
     users="$(docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | grep -F "$u" | awk '{print "active="$4}')"
     queues="$(docker exec -u 1000:1000 "$appc" sh -c 'find /data/queues -type f 2>/dev/null | wc -l' 2>&1)"
-    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；用户：$users；队列：$queues；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
+    local corec
+    corec="$(docker ps --format '{{.Names}}' | grep -E -- "--core$" | head -1)"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；用户：$users；队列：$queues"
+    echo "Gitea 全量尾部：$(docker logs --tail 25 "$appc" 2>&1 | tr '\n' '|')"
+    echo "核心全量尾部：$(docker logs --tail 25 "$corec" 2>&1 | tr '\n' '|')"
     return 1
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
