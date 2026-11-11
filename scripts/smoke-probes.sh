@@ -9,6 +9,18 @@
 #       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
 #       钩子执行顺序不依赖 harness）。
 
+wait_init() { # 升级=卸载(留数据)+新装：Gitea 数据卷里留着旧认证源（旧密钥），init 要等 gitea
+	# healthy 后才重写它。探针见"源已存在"就走链会撞上旧密钥，所以等 init 容器退出再走。
+	local inic i
+	inic="$(docker ps -a --format '{{.Names}}' | grep -E -- "-gitea--init$" | head -1)"
+	[[ -n "$inic" ]] || return 0
+	for ((i = 0; i < 45; i++)); do
+		[[ "$(docker inspect -f '{{.State.Status}}' "$inic" 2>/dev/null)" == exited ]] && return 0
+		sleep 2
+	done
+	echo "init 容器 90 秒没跑完，不等了"
+}
+
 gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则核心登录 + 入口页 SSO 链。
 	# 链路要求 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON。
 	# 对已登录的 jar 重走 OAuth 链会被 Gitea 重开授权流程打断，所以先查会话。
@@ -17,6 +29,7 @@ gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则�
 		{ echo "应用首页拉不到"; return 1; }
 	grep -q 'href="/-/admin"' <<<"$page" && { printf '%s' "$page"; return 0; }
 	[[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
+	wait_init
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$1" --data-urlencode "token=$token" \
 		"$base/_wonton/login" || { echo "用户令牌登录不了核心"; return 1; }
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -L -b "$1" -c "$1" -H 'Accept: text/html' \
