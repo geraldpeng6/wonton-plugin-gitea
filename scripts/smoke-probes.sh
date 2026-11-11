@@ -182,7 +182,10 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   action="$(grep -o '<form[^>]*action="[^"]*"' <<<"$form" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
   [[ "$action" == /* ]] || action="/-/admin/users/new"
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$form" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  [[ -n "$csrf" ]] || { echo "管理建号页没有 _csrf"; return 1; }
+  if [[ -z "$csrf" ]]; then
+    csrf="$(grep -o '<input[^>]*name="_csrf"[^>]*>' <<<"$form" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
+  fi
+  [[ -n "$csrf" ]] || { echo "管理建号页没有 _csrf：$(grep -o '_csrf[^>]\{0,60\}' <<<"$form" | head -2 | tr '\n' '|')；页面头：$(head -c 200 <<<"$form")"; return 1; }
   local u st
   u="wonton-mail-$(date +%s)"
   st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
