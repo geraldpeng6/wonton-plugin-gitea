@@ -222,9 +222,14 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     "$SMOKE_WEB_URL/repo/create")" || { echo "POST /repo/create 失败"; return 1; }
   [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] || { echo "建仓库没成功（HTTP $st）"; return 1; }
 
-  # 测试用户以 Basic 认证在主人的公开仓库里开 issue，触发主人的 issue 通知邮件
-  st="$(curl -sS --noproxy '*' -u "$u:$pw" -o /dev/null -w '%{http_code}' \
-    -H 'Content-Type: application/json' \
+  # 给测试用户发个 API 令牌（admin CLI），用它开 issue：Gitea 28 的 API 对 Basic 认证返回 401
+  local tok
+  tok="$(docker exec -u 1000:1000 "$appc" gitea admin user generate-access-token -u "$u" \
+    -t "wonton-mail-token-$(date +%s)" --scopes write:repository --raw 2>/dev/null | tail -1)" ||
+    { echo "给测试用户发令牌失败"; return 1; }
+  [[ -n "$tok" ]] || { echo "测试用户令牌是空的"; return 1; }
+  st="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' \
+    -H "Authorization: token $tok" -H 'Content-Type: application/json' \
     -d "{\"title\":\"wonton mail test $repo\"}" \
     "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo/issues")" || { echo "开 issue 失败"; return 1; }
   [[ "$st" == 201 ]] || { echo "开 issue 没成功（HTTP $st）"; return 1; }
