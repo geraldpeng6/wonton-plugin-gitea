@@ -225,7 +225,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   # 给测试用户发个 API 令牌（admin CLI），用它开 issue：Gitea 28 的 API 对 Basic 认证返回 401
   local tok
   tok="$(docker exec -u 1000:1000 "$appc" gitea admin user generate-access-token -u "$u" \
-    -t "wonton-mail-token-$(date +%s)" --scopes write:repository --raw 2>/dev/null | tail -1)" ||
+    -t "wonton-mail-token-$(date +%s)" --scopes write:issue,write:repository --raw 2>/dev/null | tail -1)" ||
     { echo "给测试用户发令牌失败"; return 1; }
   [[ -n "$tok" ]] || { echo "测试用户令牌是空的"; return 1; }
   local issue
