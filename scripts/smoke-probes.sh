@@ -134,6 +134,13 @@ _owner_email() { # 主人资料里的内部邮箱（收件人用它，不猜域�
   jq -er '.email // empty' <<<"$me" || { echo "主人资料里没有邮箱：$me"; return 1; }
 }
 
+core_session() { # <jar>：只建核心会话（POST /_wonton/login），不动应用会话
+	local base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+	[[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
+	curl -sS --noproxy '*' -o /dev/null -b "$1" -c "$1" --data-urlencode "token=$token" "$base/_wonton/login" ||
+		{ echo "核心会话登录不了"; return 1; }
+}
+
 extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
   local appc rc to page csrf
   appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
@@ -145,20 +152,23 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   echo "发信环境变量已注入：$rc"
 
   to="$(_owner_email)" || { echo "$to"; return 1; }
+  local anon="$SMOKE_JAR.anon"
+  : >"$anon"
+  core_session "$anon" || { echo "$?"; return 1; }
 
   # 真实找回密码信：POST /user/forgot_password（表单的 _csrf 与 Cookie 同值）。
   # 该页是公开页：只要核心会话过网关即可，不要先走 OIDC 登录（登录后访问会被重定向走）。
-  page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/user/forgot_password")" ||
+  page="$(curl -sS --noproxy '*' -b "$anon" -c "$anon" "$SMOKE_WEB_URL/user/forgot_password")" ||
     { echo "拿不到找回密码页"; return 1; }
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   if [[ -z "$csrf" ]]; then
     inic="$(docker ps -a --format '{{.Names}}' | grep -E -- "init" | grep -i gitea | head -1)"
     echo "找回密码页没有 _csrf；init 容器：${inic:-无}，日志：$(docker logs "$inic" 2>&1 | tail -8 | tr '\n' '|')"
     echo "认证源：$(docker exec -u 1000:1000 "$appc" gitea admin auth list --vertical-bars 2>&1 | tail -3 | tr '\n' '|')"
-    echo "页面开头：$(head -c 300 <<<"$page")"
+    echo "页面开头：$(head -c 300 <<<"$page")；title：$(grep -o '<title>[^<]*' <<<"$page" | head -1)"
     return 1
   fi
-  rc="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
+  rc="$(curl -sS --noproxy '*' -b "$anon" -o /dev/null -w '%{http_code}' \
     --data-urlencode "_csrf=$csrf" --data-urlencode "email=$to" \
     "$SMOKE_WEB_URL/user/forgot_password")" || { echo "POST /user/forgot_password 失败"; return 1; }
   [[ "$rc" == 200* || "$rc" == 302* || "$rc" == 303* ]] ||
@@ -167,12 +177,13 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   _mx_wait_mail io.gitea.gitea ||
     { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的找回密码信（收件人 $to）"; return 1; }
   echo "找回密码信已投进 $to 的 Wonton 私聊"
+  sso_diag || true
 }
 
 sso_diag() { # 诊断：走一遍 OIDC 链，打印落点 URL 和页面 title（不动断言）
-  local land
-  land="$(curl -sS --noproxy '*' -o /tmp/sso-diag.html -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
-    -w '%{url_effective} -> %{http_code}' "$SMOKE_WEB_URL/user/oauth2/wonton")" ||
-    { echo "sso_diag 链失败：$land"; return 1; }
-  echo "sso_diag 落点：$land；title：$(grep -o '<title>[^<]*' /tmp/sso-diag.html | head -1)"
+	local land jar="$SMOKE_JAR.diag"
+	: >"$jar" && core_session "$jar" || return 1
+	land="$(curl -sS --noproxy '*' -o "$jar.html" -L -b "$jar" -c "$jar" 		-w '%{url_effective} -> %{http_code}' "$SMOKE_WEB_URL/user/oauth2/wonton")" ||
+		{ echo "sso_diag 链失败：$land"; return 1; }
+	echo "sso_diag 落点：$land；title：$(grep -o '<title>[^<]*' "$jar.html" | head -1)；会话 cookie：$(grep -c gitea "$jar" || true)"
 }
