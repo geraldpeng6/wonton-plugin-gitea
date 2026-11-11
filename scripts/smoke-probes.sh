@@ -9,7 +9,18 @@
 #       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
 #       钩子执行顺序不依赖 harness）。
 
-gitea_session() { # <jar 文件>：dweb 走完 OIDC 链，Gitea 会话落在 jar 里；输出落点页面
+gitea_session() { # <jar 文件>：等 init 登记好 OIDC 认证源，再 dweb 走完 OIDC 链；输出落点页面。
+	# init 一次性服务等 gitea 健康后才登记，探针可能先到：装好就登录会 404 到登录页。
+	local i appc
+	appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
+	for ((i = 0; i < 30; i++)); do
+		docker exec -u 1000:1000 "$appc" gitea admin auth list 2>/dev/null | grep -qw wonton && break
+		sleep 2
+	done
+	if curl -sS --noproxy '*' -b "$1" -c "$1" "$SMOKE_WEB_URL/" | grep -q 'data-page="user/profile"'; then
+		curl -sS --noproxy '*' -b "$1" -c "$1" "$SMOKE_WEB_URL/"   # jar 已登录，直接返回页面
+		return 0
+	fi
 	dweb /user/oauth2/wonton -L -b "$1" -c "$1"
 }
 
@@ -142,7 +153,7 @@ core_session() { # <jar>：只建核心会话（POST /_wonton/login），不动�
 }
 
 extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
-  local appc rc to page csrf
+  local appc rc to page
   appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
   [[ -n "$appc" ]] || { echo "找不到 Gitea 应用容器"; return 1; }
   rc="$(docker exec "$appc" printenv GITEA__mailer__SMTP_ADDR)$(docker exec "$appc" printenv GITEA__mailer__SMTP_PORT)" ||
@@ -152,31 +163,24 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   echo "发信环境变量已注入：$rc"
 
   to="$(_owner_email)" || { echo "$to"; return 1; }
-  local anon="$SMOKE_JAR.anon"
-  : >"$anon"
-  core_session "$anon" || { echo "$?"; return 1; }
+  gitea_session "$SMOKE_JAR" >/dev/null || { echo "OIDC 链走不通，拿不到管理员会话"; return 1; }
 
-  # 真实找回密码信：POST /user/forgot_password（表单的 _csrf 与 Cookie 同值）。
-  # 该页是公开页：只要核心会话过网关即可，不要先走 OIDC 登录（登录后访问会被重定向走）。
-  page="$(curl -sS --noproxy '*' -b "$anon" -c "$anon" "$SMOKE_WEB_URL/user/forgot_password")" ||
-    { echo "拿不到找回密码页"; return 1; }
-  csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  if [[ -z "$csrf" ]]; then
-    inic="$(docker ps -a --format '{{.Names}}' | grep -E -- "init" | grep -i gitea | head -1)"
-    echo "找回密码页没有 _csrf；init 容器：${inic:-无}，日志：$(docker logs "$inic" 2>&1 | tail -8 | tr '\n' '|')"
-    echo "认证源：$(docker exec -u 1000:1000 "$appc" gitea admin auth list --vertical-bars 2>&1 | tail -3 | tr '\n' '|')"
-    echo "页面开头：$(head -c 300 <<<"$page")；title：$(grep -o '<title>[^<]*' <<<"$page" | head -1)"
-    return 1
+  # 真实发信测试：建收件人=主人内部邮箱的临时用户，send_notify 让 Gitea 真发"账号已创建"邮件。
+  # 找回密码页对已登录用户重定向（SSO 链必然登录应用），没法用它发信。
+  local u st
+  u="wonton-mail-$(date +%s)"
+  st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$u\",\"email\":\"$to\",\"password\":\"Wonton-${u}aA1\",\"send_notify\":true}" \
+    "$SMOKE_WEB_URL/api/v1/admin/users")" || { echo "建测试用户失败"; return 1; }
+  [[ "$st" == 201 ]] || { echo "建测试用户没成功（HTTP $st）"; return 1; }
+  if ! _mx_wait_mail io.gitea.gitea; then
+    curl -sS --noproxy '*' -b "$SMOKE_JAR" -X DELETE "$SMOKE_WEB_URL/api/v1/admin/users/$u?purge=true" -o /dev/null || true
+    { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）"; return 1; }
   fi
-  rc="$(curl -sS --noproxy '*' -b "$anon" -o /dev/null -w '%{http_code}' \
-    --data-urlencode "_csrf=$csrf" --data-urlencode "email=$to" \
-    "$SMOKE_WEB_URL/user/forgot_password")" || { echo "POST /user/forgot_password 失败"; return 1; }
-  [[ "$rc" == 200* || "$rc" == 302* || "$rc" == 303* ]] ||
-    { echo "找回密码请求没成功（HTTP $rc）"; return 1; }
-  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
-  _mx_wait_mail io.gitea.gitea ||
-    { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的找回密码信（收件人 $to）"; return 1; }
-  echo "找回密码信已投进 $to 的 Wonton 私聊"
+  curl -sS --noproxy '*' -b "$SMOKE_JAR" -X DELETE "$SMOKE_WEB_URL/api/v1/admin/users/$u?purge=true" -o /dev/null ||
+    echo "测试用户 $u 删除失败，要手工删"
+  echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
   sso_diag || true
 }
 
