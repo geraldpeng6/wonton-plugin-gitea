@@ -164,6 +164,13 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
 
   to="$(_owner_email)" || { echo "$to"; return 1; }
   gitea_session "$SMOKE_JAR" >/dev/null || { echo "OIDC 链走不通，拿不到管理员会话"; return 1; }
+  me="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" "$SMOKE_WEB_URL/api/v1/user")" || { echo "读 /api/v1/user 失败"; return 1; }
+  jq -e '.login' <<<"$me" >/dev/null 2>&1 || {
+    echo "应用会话没建立（/api/v1/user：$(jq -c '.message // .' <<<"$me" | head -c 120)）"
+    sso_diag || true
+    return 1
+  }
+  jq -e '.site_admin' <<<"$me" >/dev/null 2>&1 || { echo "主人登录了但不是管理员（site_admin=false），admin API 用不了"; return 1; }
 
   # 真实发信测试：建收件人=主人内部邮箱的临时用户，send_notify 让 Gitea 真发"账号已创建"邮件。
   # 找回密码页对已登录用户重定向（SSO 链必然登录应用），没法用它发信。
