@@ -114,9 +114,11 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     "$SMOKE_WEB_URL/user/forgot_password")" || { echo "POST /user/forgot_password 失败"; return 1; }
   [[ "$rc" == 200* || "$rc" == 302* || "$rc" == 303* ]] ||
     { echo "找回密码请求没成功（HTTP $rc）"; return 1; }
+  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mp_wait --arg to "$to" '.messages | any(.To[].Address == $to)' ||
     { echo "60 秒内没在内部邮箱看到收件人 $to 的找回密码信"; return 1; }
   echo "找回密码信已进内部邮箱（收件人 $to）"
+  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mp_wait --arg to "$to" '(.messages | map(select(.To[].Address == $to)) | length) == 0' ||
     { echo "信一直留在 Mailpit：核心没把它投进收件人的 Wonton 私聊（投完才会删）"; return 1; }
   echo "核心已把找回密码信投进 $to 的 Wonton 私聊"
