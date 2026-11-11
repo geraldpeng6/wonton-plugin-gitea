@@ -67,10 +67,10 @@ x-wonton:
   id: io.gitea.gitea
   version: 0.1.0
   kind: app
-  title: { en: Gitea }
+  title: { zh: 代码仓库（Gitea）, en: Code Hosting (Gitea) }
   description:
-    zh: 私有 Git 代码托管：网页经云吞账号登录，局域网 SSH 推拉代码
-    en: "Private Git hosting: sign in with your Wonton account, push and pull over LAN SSH"
+    zh: 像自家的 GitHub：存放代码、记下每一次修改，和家人或伙伴一起看、一起改，手机上也能浏览。
+    en: "Like your own GitHub: keep your code with every change recorded, and browse or work on it together with family or teammates — from your phone too."
   icon: icon.svg
   notices: [NOTICE]
   screenshots: [screenshots/dashboard.png, screenshots/repo.png, screenshots/file.png]
@@ -83,7 +83,7 @@ x-wonton:
     en: [Developer, Git]
   about:
     zh: |
-      自己家里的 Git 服务：建仓库、提 issue、审 PR、看代码，手机网页都能用。
+      自己家里的代码仓库：建仓库、存代码、看每次改动、和人协作，手机网页也能用。
 
       网页用云吞账号打开，第一次登录自动建号；你（云吞的主人）在这个实例里是管理员。
       本地注册是关掉的，家人要用就在云吞里换账号登录一次。自动注册需要云吞账号填过邮箱。
@@ -92,7 +92,7 @@ x-wonton:
       git clone ssh://git@<这台主机的局域网地址>:2222/<用户>/<仓库>.git。
       多个局域网地址时克隆地址按设置里显示的改一台。
     en: |
-      Your own Git service at home: create repos, file issues, review PRs and read code from the phone.
+      Your own code hosting at home: create repositories, keep code, review every change and collaborate — usable from your phone too.
 
       The web opens with your Wonton account and the account is created on first sign-in; you (the Wonton owner) are the admin of this instance. Local sign-up is disabled — family members sign in once with their Wonton account. Auto sign-up needs an email on the Wonton account.
 
