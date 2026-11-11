@@ -181,13 +181,11 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "管理建号页不对（title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)）"; return 1; }
   action="$(grep -o '<form[^>]*action="[^"]*"' <<<"$form" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
   [[ "$action" == /* ]] || action="/-/admin/users/new"
-  # Gitea 28 的表单不带 _csrf 输入了：令牌在 _csrf cookie 里（双提交），提交时由前端回填。
-  csrf="$(awk '$6 == "_csrf" {print $7}' "$SMOKE_JAR" 2>/dev/null | head -1)"
-  [[ -n "$csrf" ]] || { echo "jar 里没有 _csrf cookie：$(grep -cv '^#' "$SMOKE_JAR" 2>/dev/null) 条 cookie"; return 1; }
+  # Gitea 28 起表单不带 _csrf 令牌了：靠 SameSite cookie 加 Origin 校验，脚本提交带上 Origin。
   local u st
   u="wonton-mail-$(date +%s)"
   st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
-    --data-urlencode "_csrf=$csrf" \
+    -H "Origin: $SMOKE_WEB_URL" \
     --data-urlencode "user_name=$u" \
     --data-urlencode "email=$to" \
     --data-urlencode "password=Wonton-${u}aA1" \
