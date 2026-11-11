@@ -190,6 +190,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   body="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
     -H "Origin: $SMOKE_WEB_URL" \
     --data-urlencode "user_name=$u" \
+    --data-urlencode "login_type=0-0" \
     --data-urlencode "email=$to" \
     --data-urlencode "password=Wonton-${u}aA1" \
     --data-urlencode "send_notify=on" \
