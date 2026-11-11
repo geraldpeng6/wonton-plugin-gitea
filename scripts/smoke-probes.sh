@@ -13,8 +13,12 @@ gitea_session() { # <jar 文件>：核心登录 + 入口页 SSO 链（同 dev.sh
 	# 必须 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON，-L 无处可跳。
 	local base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
 	[[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
-	curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$1" --data-urlencode "token=$token" \
-		"$base/_wonton/login" || { echo "用户令牌登录不了核心"; return 1; }
+	local code
+	code="$(curl -sS --noproxy '*' -D /tmp/gitea-login-headers.txt --fail-with-body -o /dev/null -c "$1" \
+		-w '%{http_code}' --data-urlencode "token=$token" "$base/_wonton/login")" ||
+		{ echo "用户令牌登录不了核心（HTTP $code，token 长度 ${#token}）"; return 1; }
+	grep -qi '^set-cookie' /tmp/gitea-login-headers.txt ||
+		{ echo "核心登录没发会话 cookie（HTTP $code，token 长度 ${#token}，响应头：$(head -c 200 /tmp/gitea-login-headers.txt | tr '\n' '|')）"; return 1; }
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -L -b "$1" -c "$1" -H 'Accept: text/html' \
 		"$SMOKE_WEB_URL/user/oauth2/wonton" || { echo "走不通插件网页的登录跳转"; return 1; }
 	local land page
