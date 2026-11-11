@@ -24,7 +24,7 @@ gitea_session() { # <jar 文件>：核心登录 + 入口页 SSO 链（同 dev.sh
 	grep -q 'data-page="user/dashboard"' <<<"$land" || {
 		local appc
 		appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
-		echo "OIDC 链没落回登录后的仪表盘：title：$(grep -o '<title>[^<]*' <<<"$land" | head -1)；Gitea 日志：$(docker logs "$appc" 2>&1 | tail -10 | tr '\n' '|')"
+		echo "OIDC 链没落回登录后的仪表盘：title：$(grep -o '<title>[^<]*' <<<"$land" | head -1)；jar：$(grep -v '^#' "$1" 2>/dev/null | awk '{print $6}' | tr '\n' ',')；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -E 'router: completed|Failed|SignIn' | tail -6 | tr '\n' '|')"
 		return 1
 	}
 	printf '%s' "$land"
