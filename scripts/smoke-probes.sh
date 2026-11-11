@@ -152,9 +152,9 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "拿不到找回密码页"; return 1; }
   csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   if [[ -z "$csrf" ]]; then
-    inic="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--init|gitea-init-1" | head -1)"
+    inic="$(docker ps -a --format '{{.Names}}' | grep -E -- "init" | grep -i gitea | head -1)"
     echo "找回密码页没有 _csrf；init 容器：${inic:-无}，日志：$(docker logs "$inic" 2>&1 | tail -8 | tr '\n' '|')"
-    echo "认证源：$(docker exec "$appc" gitea admin auth list --vertical-bars 2>&1 | tail -3 | tr '\n' '|')"
+    echo "认证源：$(docker exec -u 1000:1000 "$appc" gitea admin auth list --vertical-bars 2>&1 | tail -3 | tr '\n' '|')"
     echo "页面开头：$(head -c 300 <<<"$page")"
     return 1
   fi
