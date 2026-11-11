@@ -32,6 +32,8 @@ services:
       GITEA__mailer__SMTP_ADDR: ${WONTON_SMTP_HOST}
       GITEA__mailer__SMTP_PORT: ${WONTON_SMTP_PORT}
       GITEA__mailer__FROM: ${WONTON_MAIL_FROM}
+      # issue/PR 的邮件通知走 notifier：Gitea 默认不注册邮件通知器，不开这个通知邮件一封都不发。
+      GITEA__service__ENABLE_NOTIFY_MAIL: "true"
     volumes:
       - ${WONTON_APP_DATA}:/data
     # /api/healthz 会真的探数据库，迁移或数据库坏了时返回 5xx，不是进程活着就算健康。
