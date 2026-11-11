@@ -1,29 +1,11 @@
 #!/bin/sh
-# 一次性初始化，每次创建容器都会重跑：
-# 1. 把云吞的 OIDC 认证源登记进 Gitea 数据库（源名 wonton，回调 /user/oauth2/wonton/callback）。
-#    保留数据重装时客户端密钥已换，必须重写，不能"已存在就跳过"。
-#    groups 声明里是云吞用户组（["owner"]），owner 组映射成 Gitea 管理员。
-# 2. 把主人账号的邮箱对齐成云吞注入的内部邮箱。OIDC 只在自动注册建号时取邮箱声明，命中已有账号后
-#    不再更新（登录只同步激活、管理员和组），核心换成内部邮箱之前装的实例，账号邮箱还是当时的真实
-#    地址，找回密码和通知会寄到外面被核心拒收。还没有账号（主人没登录过）或邮箱已经是内部地址时
-#    什么都不做：之后 OIDC 建号自带内部邮箱。
+# 一次性初始化，每次创建容器都会重跑（等 gitea 健康后跑，走管理接口）：
+# 把主人账号的邮箱对齐成云吞注入的内部邮箱。OIDC 只在自动注册建号时取邮箱声明，命中已有账号后
+# 不再更新（登录只同步激活、管理员和组），核心换成内部邮箱之前装的实例，账号邮箱还是当时的真实
+# 地址，找回密码和通知会寄到外面被核心拒收。还没有账号（主人没登录过）或邮箱已经是内部地址时
+# 什么都不做：之后 OIDC 建号自带内部邮箱。
+# OIDC 认证源的登记在 config/init-db.sh（gitea 启动前），见那里的说明。
 set -eu
-
-discovery="${WONTON_OIDC_ISSUER}/.well-known/openid-configuration"
-# gitea admin auth list --vertical-bars 的行是 "ID\t|Name\t|Type\t|Enabled"。
-# 认证源存在就删了重加：update-oauth 不更新客户端密钥（升级/重装换了密钥后，旧源留着旧密钥，
-# 兑换会 invalid_client），delete+add 才保证密钥、方式和作用域都按这次注入的来。
-id="$(gitea admin auth list --vertical-bars 2>/dev/null |
-	awk -F'|' 'NR>1 {gsub(/[\t ]/,"",$1); gsub(/[\t ]/,"",$2); if ($2 == "wonton") print $1}')"
-if [ -n "$id" ]; then
-	gitea admin auth delete --id "$id"
-fi
-gitea admin auth add-oauth \
-	--name wonton --provider openidConnect \
-	--key "$WONTON_OIDC_CLIENT_ID" --secret "$WONTON_OIDC_CLIENT_SECRET" \
-	--auto-discover-url "$discovery" \
-	--scopes openid --scopes profile --scopes email --scopes groups \
-	--group-claim-name groups --admin-group owner
 
 # gitea admin user list 的行是 "ID Username Email IsActive IsAdmin 2FA Type"，用户名和邮箱没有空白。
 row="$(gitea admin user list 2>/dev/null | awk -v u="$WONTON_OWNER_NAME" '$2 == u && $NF == "User"')"

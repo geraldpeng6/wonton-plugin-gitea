@@ -41,19 +41,35 @@ services:
       timeout: 5s
       start_period: 300s
       start_interval: 5s
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
 
-  # 一次性服务：登记 OIDC 认证源，并把主人账号的邮箱对齐成云吞注入的内部邮箱（见 config/init.sh）。
-  # 保留数据重装时客户端密钥会换，所以每次创建容器都重写这一条（幂等），不能"已存在就跳过"。
-  # 要连发现文档、调管理接口，等 gitea 健康后再跑。
-  init:
+  # 一次性服务：gitea 启动前把云吞的 OIDC 认证源写进数据库（见 config/init-db.sh）。
+  # CLI 是独立进程，对运行中的 gitea 改认证源不生效（go-gitea/gitea#35611），所以必须在
+  # gitea 启动前写库，gitea 启动时才按 DB 注册 OAuth2 provider。
+  init-db:
     image: gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
-    # 绕过镜像入口（它只服务 s6 常驻启动），直接以 PUID 跑 gitea 命令行。
-    entrypoint: ["/bin/sh", "/init/init.sh"]
+    entrypoint: ["/bin/sh", "/init/init-db.sh"]
     user: "${PUID}:${PGID}"
     environment:
       WONTON_OIDC_ISSUER: ${WONTON_OIDC_ISSUER}
       WONTON_OIDC_CLIENT_ID: ${WONTON_OIDC_CLIENT_ID}
       WONTON_OIDC_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
+    volumes:
+      - ${WONTON_APP_DATA}:/data
+    configs:
+      - source: init_db
+        target: /init/init-db.sh
+    restart: "no"
+
+  # 一次性服务：把主人账号的邮箱对齐成云吞注入的内部邮箱（见 config/init.sh）。走管理接口，
+  # 等 gitea 健康后再跑。
+  init:
+    image: gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    user: "${PUID}:${PGID}"
+    environment:
       WONTON_OWNER_NAME: ${WONTON_OWNER_NAME}
       WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL}
     volumes:
@@ -69,6 +85,8 @@ services:
 configs:
   init:
     file: config/init.sh
+  init_db:
+    file: config/init-db.sh
 
 x-wonton:
   spec: "0.11"
