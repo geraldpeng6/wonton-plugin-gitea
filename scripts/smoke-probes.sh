@@ -198,11 +198,13 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   if ! _mx_wait_mail io.gitea.gitea; then
     local appc
     appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$" | head -1)"
-    local mp smtp
+    local mp smtp users queues
     mp="$(_mp_api '/api/v1/messages?limit=10' | jq -c '[.messages[] | {to: [.To[].Address], subject}]' 2>&1 | head -c 300)"
     smtp="$(docker exec -u 1000:1000 "$appc" sh -c \
-      'nc -zv -w 3 "$SMTP_HOST" 25 2>&1 || { getent hosts "$SMTP_HOST" || echo "DNS 解析不了 $SMTP_HOST"; }' 2>&1 | head -c 120)"
-    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
+      'addr="$(printenv GITEA__mailer__SMTP_ADDR)"; nc -zv -w 3 "$addr" 25 2>&1 || { getent hosts "$addr" || echo "DNS 解析不了 $addr"; }' 2>&1 | head -c 120)"
+    users="$(docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | tail -2 | tr '\n' '|')"
+    queues="$(docker exec -u 1000:1000 "$appc" sh -c 'ls /data/queues/ 2>&1; ls /data/queues/mail-common 2>/dev/null | head -3' 2>&1 | tr '\n' '|' | head -c 120)"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；用户：$users；队列：$queues；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
     return 1
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
