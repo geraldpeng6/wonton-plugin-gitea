@@ -170,11 +170,20 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "发信环境变量不对：GITEA__mailer__SMTP_ADDR/PORT=$rc"; return 1; }
   echo "发信环境变量已注入：$rc"
 
-  to="$(_owner_email)" || { echo "$to"; return 1; }
   page="$(gitea_session "$SMOKE_JAR")" || { echo "拿不到应用会话：$page"; return 1; }
 
-  # 真实发信测试：管理面板建号表单（session+CSRF），send_notify 让 Gitea 真发"账号已创建"邮件，
-  # 收件人填主人的内部邮箱。找回密码页对已登录用户重定向（SSO 链必然登录应用），用不了。
+  # 真实通知管道：主人建公开仓库，测试用户（Basic 认证）在其中开 issue，Gitea 给主人（watch
+  # 自己的仓库）发 issue 通知邮件，收件人是主人的内部邮箱。测试用户自己的地址是占位（不会被发信）。
+  # 不能用建号邮件（send_notify）：它发给测试用户自己的地址，核心只放行 <用户名>@wonton.internal，
+  # 会 550 拒收；而测试用户也不能占主人唯一的内部邮箱。
+  to="$(docker exec "wonton-${SMOKE_INSTANCE:?}--core" printenv WONTON_OWNER_EMAIL)" ||
+    { echo "读不到核心注入的 WONTON_OWNER_EMAIL"; return 1; }
+  [[ "$to" == *@wonton.internal ]] || { echo "核心注入的邮箱不是内部地址：$to"; return 1; }
+
+  local u pw st body repo
+  repo="wonton-mail-smoke-$(date +%s)"
+  u="wonton-mail-$(date +%s)"
+  pw="Wonton-${u}aA1"
   form="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/-/admin/users/new")" ||
     { echo "拿不到管理建号页"; return 1; }
   grep -q 'id="user_name"' <<<"$form" ||
@@ -183,17 +192,12 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   action="$(awk '/<form/{f=$0} /id="user_name"/{print f; exit}' <<<"$form" |
     grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
   [[ "$action" == /* ]] || { echo "建号 form 取不到 action，页面 form：$(grep -c '<form' <<<"$form") 个"; return 1; }
-  # Gitea 28 起表单不带 _csrf 令牌了：靠 SameSite cookie 加 Origin 校验，脚本提交带上 Origin。
-  local u st
-  u="wonton-mail-$(date +%s)"
-  local body
   body="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
     -H "Origin: $SMOKE_WEB_URL" \
     --data-urlencode "user_name=$u" \
     --data-urlencode "login_type=0-0" \
-    --data-urlencode "email=$to" \
-    --data-urlencode "password=Wonton-${u}aA1" \
-    --data-urlencode "send_notify=on" \
+    --data-urlencode "email=$u@example.org" \
+    --data-urlencode "password=$pw" \
     "$SMOKE_WEB_URL$action")" || { echo "POST $action 失败"; return 1; }
   st="${body##*$'\n'}"
   if [[ "$st" != 200* && "$st" != 302* && "$st" != 303* ]]; then
@@ -201,27 +205,40 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   fi
   # 以用户列表为准确认建上了，别拿 200/302 当成功；失败时把表单页的错误带出来
   if ! docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | awk -v u="$u" '$2 == u {found=1} END {exit !found}'; then
-    echo "测试用户 $u 没建成（POST 回了 $st）：$(grep -oE 'flash-message[^<]*<[^>]*>[^<]{0,120}|validation-error[^<]{0,120}' <<<"$body" | head -2 | tr '\n' '|')；页面 title：$(grep -o '<title>[^<]*' <<<"${body%$'\n'*}" | head -1)"
+    echo "测试用户 $u 没建成（POST 回了 $st）：$(grep -oE 'flash-message[^<]*<[^>]*>[^<]{0,120}' <<<"$body" | head -2 | tr '\n' '|')；页面 title：$(grep -o '<title>[^<]*' <<<"${body%$'\n'*}" | head -1)"
     return 1
   fi
-  # 临时用户随冒烟实例销毁，不做清理（实例是一次性的）
+  # 临时用户和仓库随冒烟实例销毁，不做清理（实例是一次性的）
+
+  # 主人建公开仓库（web 表单，同 data_write 的做法）
+  page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/repo/create")" ||
+    { echo "拿不到建仓库页"; return 1; }
+  local uid
+  uid="$(grep -o 'name="uid" value="[0-9]*"' <<<"$page" | grep -o '[0-9]*' | head -1)"
+  [[ -n "$uid" ]] || { echo "建仓库页取不到 uid"; return 1; }
+  st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
+    -H "Origin: $SMOKE_WEB_URL" \
+    --data-urlencode "uid=$uid" --data-urlencode "repo_name=$repo" --data-urlencode "private=false" \
+    "$SMOKE_WEB_URL/repo/create")" || { echo "POST /repo/create 失败"; return 1; }
+  [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] || { echo "建仓库没成功（HTTP $st）"; return 1; }
+
+  # 测试用户以 Basic 认证在主人的公开仓库里开 issue，触发主人的 issue 通知邮件
+  st="$(curl -sS --noproxy '*' -u "$u:$pw" -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d "{\"title\":\"wonton mail test $repo\"}" \
+    "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo/issues")" || { echo "开 issue 失败"; return 1; }
+  [[ "$st" == 201 ]] || { echo "开 issue 没成功（HTTP $st）"; return 1; }
 
   if ! _mx_wait_mail io.gitea.gitea; then
-    local appc
-    appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$" | head -1)"
-    local mp smtp users queues
+    local mp smtp queues
     mp="$(_mp_api '/api/v1/messages?limit=10' | jq -c '[.messages[] | {to: [.To[].Address], subject}]' 2>&1 | head -c 300)"
     smtp="$(docker exec -u 1000:1000 "$appc" sh -c \
       'addr="$(printenv GITEA__mailer__SMTP_ADDR)"; nc -zv -w 3 "$addr" 25 2>&1 || { getent hosts "$addr" || echo "DNS 解析不了 $addr"; }' 2>&1 | head -c 120)"
     users="$(docker exec -u 1000:1000 "$appc" gitea admin user list 2>/dev/null | grep -F "$u" | awk '{print "active="$4}')"
     queues="$(docker exec -u 1000:1000 "$appc" sh -c 'find /data/queues -type f 2>/dev/null | wc -l' 2>&1)"
-    local corec
-    corec="$(docker ps --format '{{.Names}}' | grep -E -- "--core$" | head -1)"
-    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；用户：$users；队列：$queues"
-    echo "Gitea 全量尾部：$(docker logs --tail 25 "$appc" 2>&1 | tr '\n' '|')"
-    echo "核心全量尾部：$(docker logs --tail 25 "$corec" 2>&1 | tr '\n' '|')"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的 issue 通知邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；测试用户：$users；队列文件：$queues"
     return 1
   fi
-  echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
+  echo "Gitea 的 issue 通知邮件已投进 $to 的 Wonton 私聊"
 }
 
