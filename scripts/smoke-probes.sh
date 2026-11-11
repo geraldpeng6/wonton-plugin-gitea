@@ -194,7 +194,11 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   if ! _mx_wait_mail io.gitea.gitea; then
     local appc
     appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$" | head -1)"
-    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱现在：$(_mp_api '/api/v1/messages?limit=10' 2>/dev/null | jq -c '[.messages[] | {to: [.To[].Address], subject}]' 2>/dev/null | head -c 300)；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
+    local mp smtp
+    mp="$(_mp_api '/api/v1/messages?limit=10' | jq -c '[.messages[] | {to: [.To[].Address], subject}]' 2>&1 | head -c 300)"
+    smtp="$(docker exec -u 1000:1000 "$appc" sh -c \
+      'nc -zv -w 3 "$SMTP_HOST" 25 2>&1 || { getent hosts "$SMTP_HOST" || echo "DNS 解析不了 $SMTP_HOST"; }' 2>&1 | head -c 120)"
+    echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）；内部邮箱：$mp；SMTP 连通：$smtp；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -iaE 'mail|notify|queue' | tail -8 | tr '\n' '|')"
     return 1
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
