@@ -229,14 +229,15 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "给测试用户发令牌失败"; return 1; }
   [[ -n "$tok" ]] || { echo "测试用户令牌是空的"; return 1; }
   local issue
-  issue="$(curl -sS --noproxy '*' -w '\n%{http_code}' \
+  # API 经网关：既要核心会话过网关，也要 Gitea 令牌过应用
+  issue="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
     -H "Authorization: token $tok" -H 'Content-Type: application/json' \
     -d "{\"title\":\"wonton mail test $repo\"}" \
     "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo/issues")" || { echo "开 issue 失败"; return 1; }
   st="${issue##*$'\n'}"
   if [[ "$st" != 201 ]]; then
     local repost
-    repost="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' -H "Authorization: token $tok" \
+    repost="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' -H "Authorization: token $tok" \
       "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo")"
     echo "开 issue 没成功（HTTP $st）：$(head -c 150 <<<"${issue%$'\n'*}")；仓库查证：$repost；令牌长度：${#tok}"
     return 1
