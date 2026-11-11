@@ -181,14 +181,9 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "管理建号页不对（title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)）"; return 1; }
   action="$(grep -o '<form[^>]*action="[^"]*"' <<<"$form" | grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
   [[ "$action" == /* ]] || action="/-/admin/users/new"
-  csrf="$(grep -o 'name="_csrf" value="[^"]*"' <<<"$form" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  if [[ -z "$csrf" ]]; then
-    csrf="$(grep -o '<input[^>]*name="_csrf"[^>]*>' <<<"$form" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  fi
-  if [[ -z "$csrf" ]]; then
-    echo "管理建号页没有 _csrf：title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)；form 数：$(grep -c '<form' <<<"$form")；csrf 痕迹：$(grep -o 'csrf[^>]\{0,60\}' <<<"$form" | head -2 | tr '\n' '|')"
-    return 1
-  fi
+  # Gitea 28 的表单不带 _csrf 输入了：令牌在 _csrf cookie 里（双提交），提交时由前端回填。
+  csrf="$(awk '$6 == "_csrf" {print $7}' "$SMOKE_JAR" 2>/dev/null | head -1)"
+  [[ -n "$csrf" ]] || { echo "jar 里没有 _csrf cookie：$(grep -cv '^#' "$SMOKE_JAR" 2>/dev/null) 条 cookie"; return 1; }
   local u st
   u="wonton-mail-$(date +%s)"
   st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
