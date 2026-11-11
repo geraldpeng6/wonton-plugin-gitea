@@ -118,6 +118,9 @@ x-wonton:
     path: /user/oauth2/wonton
     oidc:
       redirect_paths: [/user/oauth2/wonton/callback]
+      # Gitea 的令牌兑换固定用 POST 体带密钥（client_secret_post）；核心默认按 client_secret_basic
+      # 登记 Hydra 客户端，不声明这条兑换时会 invalid_client。
+      token_endpoint_auth_method: client_secret_post
   secrets:
     secret_key:
       generate: { bytes: 32 }
