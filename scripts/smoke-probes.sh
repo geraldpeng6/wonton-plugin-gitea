@@ -9,29 +9,23 @@
 #       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
 #       钩子执行顺序不依赖 harness）。
 
-gitea_session() { # <jar 文件>：核心登录 + 入口页 SSO 链（同 dev.sh session_into），输出落点页面。
-	# 必须 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON，-L 无处可跳。
-	local base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则核心登录 + 入口页 SSO 链。
+	# 链路要求 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON。
+	# 对已登录的 jar 重走 OAuth 链会被 Gitea 重开授权流程打断，所以先查会话。
+	local page base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
+		{ echo "应用首页拉不到"; return 1; }
+	grep -q 'href="/-/admin"' <<<"$page" && { printf '%s' "$page"; return 0; }
 	[[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
-	local code
-	code="$(curl -sS --noproxy '*' -D /tmp/gitea-login-headers.txt --fail-with-body -o /dev/null -c "$1" \
-		-w '%{http_code}' --data-urlencode "token=$token" "$base/_wonton/login")" ||
-		{ echo "用户令牌登录不了核心（HTTP $code，token 长度 ${#token}）"; return 1; }
-	grep -qi '^set-cookie' /tmp/gitea-login-headers.txt ||
-		{ echo "核心登录没发会话 cookie（HTTP $code，token 长度 ${#token}，响应头：$(head -c 200 /tmp/gitea-login-headers.txt | tr '\n' '|')）"; return 1; }
+	curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$1" --data-urlencode "token=$token" \
+		"$base/_wonton/login" || { echo "用户令牌登录不了核心"; return 1; }
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -L -b "$1" -c "$1" -H 'Accept: text/html' \
 		"$SMOKE_WEB_URL/user/oauth2/wonton" || { echo "走不通插件网页的登录跳转"; return 1; }
-	local land page
-	page="$(curl -sS --noproxy '*' -o /tmp/gitea-session.html -L -b "$1" -c "$1" -H 'Accept: text/html' \
-		-w '%{url_effective}' "$SMOKE_WEB_URL/")" || { echo "落点页拉不到"; return 1; }
-	land="$(cat /tmp/gitea-session.html)"
-	grep -q 'data-page="user/dashboard"' <<<"$land" || {
-		local appc
-		appc="$(docker ps --format '{{.Names}}' | grep -E -- "-gitea--gitea$|gitea-gitea-1$" | head -1)"
-		echo "OIDC 链没落回登录后的仪表盘：title：$(grep -o '<title>[^<]*' <<<"$land" | head -1)；jar：$(grep -v '^#' "$1" 2>/dev/null | awk '{print $6}' | tr '\n' ',')；Gitea 日志：$(docker logs "$appc" 2>&1 | grep -E 'router: completed|Failed|SignIn' | tail -6 | tr '\n' '|')"
-		return 1
-	}
-	printf '%s' "$land"
+	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
+		{ echo "落点页拉不到"; return 1; }
+	grep -q 'href="/-/admin"' <<<"$page" ||
+		{ echo "OIDC 链没落回登录后的仪表盘（title：$(grep -o '<title>[^<]*' <<<"$page" | head -1)）"; return 1; }
+	printf '%s' "$page"
 }
 
 identity_check() { # OIDC 链落回仪表盘后，断言是主人且是管理员
@@ -193,14 +187,5 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     { echo "60 秒内没在主人的 Wonton 私聊看到 Gitea 的建号邮件（收件人 $to）"; return 1; }
   fi
   echo "Gitea 的建号邮件已投进 $to 的 Wonton 私聊"
-  sso_diag || true
 }
 
-sso_diag() { # 诊断：打印 OIDC 链落点 URL 和页面 title（不动断言）
-	local land jar="$SMOKE_JAR.diag"
-	: >"$jar" || return 1
-	gitea_session "$jar" >/dev/null 2>&1 || return 1
-	land="$(curl -sS --noproxy '*' -o "$jar.html" -L -b "$jar" -c "$jar" -H 'Accept: text/html' 		-w '%{url_effective} -> %{http_code}' "$SMOKE_WEB_URL/user/oauth2/wonton")" ||
-		{ echo "sso_diag 链失败：$land"; return 1; }
-	echo "sso_diag 落点：$land；title：$(grep -o '<title>[^<]*' "$jar.html" | head -1)"
-}
