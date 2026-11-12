@@ -4,10 +4,14 @@
 # 页面：web_assert 从标准输入读页面，命中的确是应用的真实页面时返回 0。
 # 身份：identity_check 走完 OIDC 链后断言 Gitea 认出主人，而且是管理员（dashboard 只有管理员
 #       看得到 /-/admin 入口）。dweb / web_get 是带用户会话的请求助手。
+# 清单的 webui.path 是 SSO 入口，SMOKE_WEB_URL 会带这段路径；Gitea 自己的绝对路径一律接 SMOKE_WEB_ORIGIN。
 # 工具：Gitea 没有声明 MCP，不写 mcp_check。
 # 数据：data_write 建一个固定名字的私有仓库（冒烟每次起新实例，重跑幂等），
 #       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
 #       钩子执行顺序不依赖 harness）。
+
+
+web_assert() { grep -qi 'gitea'; }   # stdin：应用真实页面
 
 wait_init() { # 升级=卸载(留数据)+新装：Gitea 数据卷里留着旧认证源（旧密钥），init 要等 gitea
 	# healthy 后才重写它。探针见"源已存在"就走链会撞上旧密钥，所以等 init 容器退出再走。
@@ -24,8 +28,8 @@ wait_init() { # 升级=卸载(留数据)+新装：Gitea 数据卷里留着旧认
 gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则核心登录 + 入口页 SSO 链。
 	# 链路要求 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON。
 	# 对已登录的 jar 重走 OAuth 链会被 Gitea 重开授权流程打断，所以先查会话。
-	local page base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
-	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
+	local page base="$SMOKE_BASE" token="$SMOKE_TOKEN"
+	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "${SMOKE_WEB_ORIGIN}/")" ||
 		{ echo "应用首页拉不到"; return 1; }
 	grep -q 'href="/-/admin"' <<<"$page" && { printf '%s' "$page"; return 0; }
 	[[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
@@ -33,8 +37,8 @@ gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则�
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$1" --data-urlencode "token=$token" \
 		"$base/_wonton/login" || { echo "用户令牌登录不了核心"; return 1; }
 	curl -sS --noproxy '*' --fail-with-body -o /dev/null -L -b "$1" -c "$1" -H 'Accept: text/html' \
-		"$SMOKE_WEB_URL/user/oauth2/wonton" || { echo "走不通插件网页的登录跳转"; return 1; }
-	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
+		"${SMOKE_WEB_ORIGIN}/user/oauth2/wonton" || { echo "走不通插件网页的登录跳转"; return 1; }
+	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "${SMOKE_WEB_ORIGIN}/")" ||
 		{ echo "落点页拉不到"; return 1; }
 	grep -q 'href="/-/admin"' <<<"$page" ||
 		{ echo "OIDC 链没落回登录后的仪表盘（title：$(grep -o '<title>[^<]*' <<<"$page" | head -1)）"; return 1; }
@@ -54,15 +58,15 @@ data_write() { # 建一个固定名字的私有仓库（冒烟每次起新实例
 	page="$(gitea_session "$SMOKE_JAR")" || { echo "$page"; return 1; }
 	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
-		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
+		"${SMOKE_WEB_ORIGIN}/$SMOKE_OWNER/wonton-smoke")"
 	[[ "$status" == 200 ]] && return 0
-	page="$(curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$SMOKE_WEB_URL/repo/create")" ||
+	page="$(curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "${SMOKE_WEB_ORIGIN}/repo/create")" ||
 		{ echo "建仓库页失败"; return 1; }
 	uid="$(grep -o 'name="uid" value="[0-9]*"' <<<"$page" | grep -o '[0-9]*' | head -1)"
 	[[ -n "$uid" ]] || { echo "建仓库页取不到 uid"; return 1; }
 	out="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code} %{redirect_url}' \
 		--data-urlencode "uid=$uid" --data-urlencode 'repo_name=wonton-smoke' --data-urlencode 'private=true' \
-		"$SMOKE_WEB_URL/repo/create")"
+		"${SMOKE_WEB_ORIGIN}/repo/create")"
 	case "$out" in
 	302* | 303*) : ;;
 	*) echo "建仓库失败：$out" ;;
@@ -75,7 +79,7 @@ data_check() { # 升级/重装后重新走 OIDC，核对仓库还在
 	page="$(gitea_session "$SMOKE_JAR")" || { echo "$page"; return 1; }
 	grep -qi gitea <<<"$page" || { echo "OIDC 链没有落回 Gitea 页面"; return 1; }
 	status="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
-		"$SMOKE_WEB_URL/$SMOKE_OWNER/wonton-smoke")"
+		"${SMOKE_WEB_ORIGIN}/$SMOKE_OWNER/wonton-smoke")"
 	[[ "$status" == 200 ]] || { echo "仓库不见了（HTTP $status）"; return 1; }
 }
 
@@ -137,7 +141,7 @@ _mx_wait_mail() { # <插件 id> [轮数=30]：轮询主人的私聊，等这封�
 
 _owner_email() { # 主人资料里的内部邮箱（收件人用它，不猜域名）
   local base token me
-  base="${E2E_BASE:-${SMOKE_BASE:-}}"; token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+  base="$SMOKE_BASE"; token="$SMOKE_TOKEN"
   [[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
   me="$(curl -sS --noproxy '*' --fail-with-body -H "Authorization: Bearer $token" "$base/_wonton/api/me")" ||
     { echo "读不到主人资料（/_wonton/api/me）"; return 1; }
@@ -184,7 +188,7 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   repo="wonton-mail-smoke-$(date +%s)"
   u="wonton-mail-$(date +%s)"
   pw="Wonton-${u}aA1"
-  form="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/-/admin/users/new")" ||
+  form="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "${SMOKE_WEB_ORIGIN}/-/admin/users/new")" ||
     { echo "拿不到管理建号页"; return 1; }
   grep -q 'id="user_name"' <<<"$form" ||
     { echo "管理建号页不对（title：$(grep -o '<title>[^<]*' <<<"$form" | head -1)）"; return 1; }
@@ -193,12 +197,12 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
     grep -o 'action="[^"]*"' | head -1 | sed -E 's/action="([^"]*)".*/\1/')"
   [[ "$action" == /* ]] || { echo "建号 form 取不到 action，页面 form：$(grep -c '<form' <<<"$form") 个"; return 1; }
   body="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
-    -H "Origin: $SMOKE_WEB_URL" \
+    -H "Origin: ${SMOKE_WEB_ORIGIN}" \
     --data-urlencode "user_name=$u" \
     --data-urlencode "login_type=0-0" \
     --data-urlencode "email=$u@example.org" \
     --data-urlencode "password=$pw" \
-    "$SMOKE_WEB_URL$action")" || { echo "POST $action 失败"; return 1; }
+    "${SMOKE_WEB_ORIGIN}$action")" || { echo "POST $action 失败"; return 1; }
   st="${body##*$'\n'}"
   if [[ "$st" != 200* && "$st" != 302* && "$st" != 303* ]]; then
     echo "建测试用户没成功（HTTP $st）"; return 1
@@ -211,15 +215,15 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   # 临时用户和仓库随冒烟实例销毁，不做清理（实例是一次性的）
 
   # 主人建公开仓库（web 表单，同 data_write 的做法）
-  page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/repo/create")" ||
+  page="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -H 'Accept: text/html' "${SMOKE_WEB_ORIGIN}/repo/create")" ||
     { echo "拿不到建仓库页"; return 1; }
   local uid
   uid="$(grep -o 'name="uid" value="[0-9]*"' <<<"$page" | grep -o '[0-9]*' | head -1)"
   [[ -n "$uid" ]] || { echo "建仓库页取不到 uid"; return 1; }
   st="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' \
-    -H "Origin: $SMOKE_WEB_URL" \
+    -H "Origin: ${SMOKE_WEB_ORIGIN}" \
     --data-urlencode "uid=$uid" --data-urlencode "repo_name=$repo" --data-urlencode "private=false" \
-    "$SMOKE_WEB_URL/repo/create")" || { echo "POST /repo/create 失败"; return 1; }
+    "${SMOKE_WEB_ORIGIN}/repo/create")" || { echo "POST /repo/create 失败"; return 1; }
   [[ "$st" == 200* || "$st" == 302* || "$st" == 303* ]] || { echo "建仓库没成功（HTTP $st）"; return 1; }
 
   # 给测试用户发个 API 令牌（admin CLI），用它开 issue：Gitea 28 的 API 对 Basic 认证返回 401
@@ -233,12 +237,12 @@ extra_check() { # 内部邮箱端到端：SMTP 配置注入、真实找回密码
   issue="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -w '\n%{http_code}' \
     -H "Authorization: token $tok" -H 'Content-Type: application/json' \
     -d "{\"title\":\"wonton mail test $repo\"}" \
-    "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo/issues")" || { echo "开 issue 失败"; return 1; }
+    "${SMOKE_WEB_ORIGIN}/api/v1/repos/$SMOKE_OWNER/$repo/issues")" || { echo "开 issue 失败"; return 1; }
   st="${issue##*$'\n'}"
   if [[ "$st" != 201 ]]; then
     local repost
     repost="$(curl -sS --noproxy '*' -b "$SMOKE_JAR" -o /dev/null -w '%{http_code}' -H "Authorization: token $tok" \
-      "$SMOKE_WEB_URL/api/v1/repos/$SMOKE_OWNER/$repo")"
+      "${SMOKE_WEB_ORIGIN}/api/v1/repos/$SMOKE_OWNER/$repo")"
     echo "开 issue 没成功（HTTP $st）：$(head -c 150 <<<"${issue%$'\n'*}")；仓库查证：$repost；令牌长度：${#tok}"
     return 1
   fi
