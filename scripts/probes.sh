@@ -2,7 +2,8 @@
 # 探针套件：准备探针环境、逐项调用 scripts/smoke-probes.sh 的探针并打印 PASS/FAIL/N/A。
 # smoke.sh 和 dev.sh probes 共用这份逻辑，两边都不复制。调用方先设好：
 #   PROBES_LOG     探针输出和失败详情追加到这里，FAIL 行摘录末尾
-#   SMOKE_DIR      工作区目录（跑 scripts/dev.sh、找 smoke-probes.sh 的地方）
+#   SMOKE_DIR      工作区目录（跑 scripts/dev.sh 的地方）
+#   SMOKE_PLUGIN   插件包目录：单插件仓库就是 SMOKE_DIR，多插件仓库是其中 WONTON_PLUGIN 指的子目录
 #   SMOKE_DEV_STATE 开发环境的状态目录（.wonton，里面有 .env），套件自己用，不给插件钩子
 #   SMOKE_STATE    数据标记文件：调用方先建成空文件，data_write 覆盖写、data_check 读（插件钩子只认它是文件）
 #   SMOKE_INSTANCE 实例名
@@ -12,10 +13,13 @@
 #   probes_facts <目录>   解析清单，备好 PROBES_PLUGIN_ID/SLUG/HAS_WEBUI/SSO/HAS_MCP（原文在 PROBES_FACTS）
 #   probes_load           读插件的 smoke-probes.sh（没有这个文件时，后面按“没写探测”处理）
 #   probes_env            实例起来以后调用：备好 SMOKE_* 变量和 dweb/web_get/mcp/smoke_api 助手
-#   probes_run [探针名…]  跑 web_assert / identity_check / mcp / data_write / data_check 各项，不给名字就全跑
+#   probes_run [探针名…]  跑 web_assert / identity_check / mcp / extra_check / data_write / data_check 各项，不给名字就全跑
 # 有 FAIL 时 DID_FAIL=1，退出码由调用方定；这里的函数不 exit，停不停由调用方决定。
 # 数据探针 data_write / data_check：插件不存用户数据时写 DATA_NA=1（两项记 N/A）。
 DID_FAIL=0
+# Agent 插件用的助手（扮演用户手机发加密消息等），插件在 extra_check 里组合。
+# shellcheck source=scripts/agent-probes.sh
+. "$(dirname "${BASH_SOURCE[0]}")/agent-probes.sh"
 
 say() { echo "== $*"; }
 pass() { echo "PASS $1：$2"; }
@@ -24,17 +28,28 @@ na() { echo "N/A  $1：$2"; }
 
 # 探针里跑 dev.sh 子命令都走这里：cd 到工作区，指到自己的状态目录和实例。
 probes_dev() {
-  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_DEV_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 scripts/dev.sh "$@")
+  (cd "$SMOKE_DIR" && WONTON_PLUGIN="$SMOKE_PLUGIN" WONTON_DEV_STATE="$SMOKE_DEV_STATE" \
+    WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 scripts/dev.sh "$@")
 }
 
 # 装 tag、reinstall 限时：卡住时如实记 FAIL，不把名额占死。
 probes_dev_t() { # <秒数> <dev.sh 参数…>
   local secs="$1"; shift
-  (cd "$SMOKE_DIR" && WONTON_DEV_STATE="$SMOKE_DEV_STATE" WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 timeout "$secs" scripts/dev.sh "$@")
+  (cd "$SMOKE_DIR" && WONTON_PLUGIN="$SMOKE_PLUGIN" WONTON_DEV_STATE="$SMOKE_DEV_STATE" \
+    WONTON_INSTANCE="$SMOKE_INSTANCE" nice -n 19 timeout "$secs" scripts/dev.sh "$@")
 }
 
 probes_setting() { # 状态目录 .env 里的一项设置
   sed -n "s/^$1=//p" "$SMOKE_DEV_STATE/.env" | tail -1
+}
+
+# 核心的基础域名，不是实例名：别的栈写 WONTON_BASE_DOMAIN，从主仓库抄成 WONTON_DEV_DOMAIN 的也认；都没写时按
+# 实例名兜底。
+probes_domain() {
+  local domain
+  domain="$(probes_setting WONTON_BASE_DOMAIN)"
+  [[ -n "$domain" ]] || domain="$(probes_setting WONTON_DEV_DOMAIN)"
+  printf '%s\n' "${domain:-$SMOKE_INSTANCE.wonton.localhost}"
 }
 
 # 插件钩子限时跑：函数开在子 shell 里（能看见调用方的函数和变量），超时就杀掉。
@@ -79,16 +94,28 @@ probes_facts() { # <仓库目录>：清单事实；compose 自己解析，不引
   PROBES_HAS_MCP="$(jq -r 'if ."x-wonton".mcp.service then 1 else 0 end' <<<"$facts")"
 }
 
+# 插件的探针文件：单插件仓库在 scripts/smoke-probes.sh；多插件仓库的套件是共用的，探针跟着插件包放在
+# <插件目录>/smoke-probes.sh。
+probes_file() {
+  if [[ "$SMOKE_PLUGIN" -ef "$SMOKE_DIR" ]]; then
+    echo "$SMOKE_DIR/scripts/smoke-probes.sh"
+  else
+    echo "$SMOKE_PLUGIN/smoke-probes.sh"
+  fi
+}
+
 probes_load() { # 读插件的探针；探针里可用的变量和助手在 probes_env 里备齐
   IDENTITY_NA=0
   DATA_NA=0
   MCP_TOOL=""
   MCP_ARGS='{}'
   SMOKE_NOTE=""
-  export WONTON_OWNER_EMAIL="${WONTON_OWNER_EMAIL:-owner@$SMOKE_INSTANCE.wonton.localhost}"
-  if [[ -f "$SMOKE_DIR/scripts/smoke-probes.sh" ]]; then
+  # shellcheck disable=SC2034 # smoke.sh 读，探针在 smoke-probes.sh 里覆盖
+  SMOKE_SETTINGS=()
+  export WONTON_OWNER_EMAIL="${WONTON_OWNER_EMAIL:-$default_owner_email}"
+  if [[ -f "$(probes_file)" ]]; then
     # shellcheck source=scripts/smoke-probes.sh
-    . "$SMOKE_DIR/scripts/smoke-probes.sh"
+    . "$(probes_file)"
   fi
   DATA_HOOKS=0
   if declare -F data_write >/dev/null && declare -F data_check >/dev/null; then DATA_HOOKS=1; fi
@@ -97,7 +124,7 @@ probes_load() { # 读插件的探针；探针里可用的变量和助手在 prob
 probes_env() { # 实例起来以后调用；读不到用户令牌时返回 1
   local port
   port="$(probes_setting WONTON_PORT)"
-  SMOKE_BASE="http://$SMOKE_INSTANCE.wonton.localhost:$port"
+  SMOKE_BASE="http://$(probes_domain):$port"
   SMOKE_TOKEN="$(probes_dev token)" || return 1
   SMOKE_OWNER="$(docker exec "wonton-$SMOKE_INSTANCE--core" cat "$(probes_setting WONTON_DATA_DIR)/core/owner.json" 2>/dev/null | jq -r '.username // empty')"
   SMOKE_OWNER="${SMOKE_OWNER:-owner}"
@@ -108,13 +135,16 @@ probes_env() { # 实例起来以后调用；读不到用户令牌时返回 1
   SMOKE_DATA_DIR="$(probes_setting WONTON_DATA_DIR)"
   export SMOKE_DIR SMOKE_STATE SMOKE_INSTANCE SMOKE_JAR SMOKE_TOOLS SMOKE_BASE SMOKE_TOKEN SMOKE_OWNER SMOKE_OWNER_EMAIL
   export SMOKE_PLUGIN_ID SMOKE_SLUG SMOKE_SSO SMOKE_MCP SMOKE_WEBUI SMOKE_CORE SMOKE_DATA_DIR
+  export SMOKE_WEB_MAX_TIME SMOKE_API_MAX_TIME
 }
 
 # 公共助手，给探针用：dweb / web_get 带用户的会话，mcp 走同一套 dev.sh 入口，smoke_api 带用户令牌调核心。
 # SMOKE_WEB_URL 是网页入口（probes_web_url 已去尾斜杠，但可能带路径，如 SSO 登录页），web_get 把路径直接接在它后面；
 # 探针拼应用的 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port，入口的路径不掺进来）。
 dweb() { probes_dev web --jar "$SMOKE_JAR" "$@"; }
-web_get() { local path="$1"; shift; curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$@" "$SMOKE_WEB_URL$path"; }
+# web_get 和 smoke_api 的秒数由调用方定（SMOKE_WEB_MAX_TIME / SMOKE_API_MAX_TIME，见 lib.sh），超时在 stderr
+# 写清地址和秒数，git grep 得到的调用处不用各自再记时间。
+web_get() { local path="$1"; shift; curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL$path" --noproxy '*' -b "$SMOKE_JAR" "$@"; }
 mcp() {
   local sub="${1:-}"
   shift || true
@@ -124,7 +154,8 @@ mcp() {
 smoke_api() {
   local method="$1" path="$2"
   shift 2
-  curl -sS --noproxy '*' --fail-with-body -X "$method" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$path"
+  curl_t "$SMOKE_API_MAX_TIME" "$SMOKE_BASE$path" --noproxy '*' -X "$method" \
+    -H "Authorization: Bearer $SMOKE_TOKEN" "$@"
 }
 
 # 通知房间：核心以核心账号发进和主人的“Wonton”私聊。开发环境里主人不在宿主机上登录 Matrix，
@@ -233,18 +264,19 @@ probes_status_wait() { # <插件 id> <次数>：等状态变成 running healthy
 }
 
 probes_web() { # 网页打得开：网关要拒绝匿名请求，页面特征要命中应用的真实页面
-  local unauth_code unauth_evi loc body
+  local unauth_code unauth_evi loc body rc=0
   if [[ "$SMOKE_WEBUI" != 1 ]]; then
     na 网页打得开 "清单没有 webui"
     return 0
   fi
   probes_dev session >>"$PROBES_LOG" 2>&1 || say "会话建立失败（后面的探测会失败）"
-  unauth_code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 60 "$SMOKE_WEB_URL/")"
+  unauth_code="$(curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL/" --noproxy '*' -o /dev/null -w '%{http_code}')" || rc=$?
   unauth_evi="匿名返回 $unauth_code"
+  ((rc == 28)) && unauth_evi="匿名请求超时（${SMOKE_WEB_MAX_TIME} 秒）"
   case "$unauth_code" in
     401) unauth_evi="匿名 401" ;;
     301|302|303|307|308)
-      loc="$(curl -sS --noproxy '*' -o /dev/null -w '%{redirect_url}' --max-time 60 "$SMOKE_WEB_URL/")"
+      loc="$(curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_URL/" --noproxy '*' -o /dev/null -w '%{redirect_url}')"
       unauth_evi="匿名 $unauth_code → $loc"
       grep -q "/_wonton/login" <<<"$loc" && unauth_evi="$unauth_evi（核心登录页）" ;;
   esac
@@ -268,7 +300,7 @@ probes_identity() { # 用户身份能用：应用认出的是用户管理员
   elif [[ "$IDENTITY_NA" == 1 ]]; then
     na 用户身份能用 "${SMOKE_NOTE:-应用没有可断言的用户体系}"
   elif ! declare -F identity_check >/dev/null; then
-    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员；没有用户体系就写 IDENTITY_NA=1）"
+    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员、不管应用里有没有数据；没有用户体系就写 IDENTITY_NA=1）"
   elif identity_check >>"$PROBES_LOG" 2>&1; then
     pass 用户身份能用 "sso=$SMOKE_SSO：应用认出用户 $SMOKE_OWNER（管理员）"
   else
@@ -282,7 +314,7 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
     na 工具Bot调得到 "清单没有 mcp"
     return 0
   fi
-  if [[ ! -f "$SMOKE_DIR/scripts/smoke-probes.sh" ]]; then
+  if [[ ! -f "$(probes_file)" ]]; then
     fail 工具Bot调得到 "没写探测：在 scripts/smoke-probes.sh 里写 MCP_TOOL=<只读工具>、MCP_ARGS 和 mcp_assert（标准输入读结果）"
     return 0
   fi
@@ -290,9 +322,11 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
     fail 工具Bot调得到 "没写探测：在 scripts/smoke-probes.sh 里写 MCP_TOOL=<只读工具>、MCP_ARGS 和 mcp_assert"
     return 0
   fi
-  gw="wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway"
   hermes_line="$(probes_status_wait com.nousresearch.hermes 40)" ||
     { fail 工具Bot调得到 "Hermes 不是 running healthy：$hermes_line"; return 1; }
+  # gateway 是 Bot 服务：核心把容器命名成 `<插件网络>--gateway--<Bot 名>`，旧核心没有后缀，按前缀找在跑的那个。
+  gw="$(running_container "wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway")" ||
+    { fail 工具Bot调得到 "没有在跑的 Hermes gateway 容器（wonton-$SMOKE_INSTANCE--com-nousresearch-hermes--gateway*）"; return 1; }
   if declare -F before_mcp >/dev/null; then
     before_mcp >>"$PROBES_LOG" 2>&1 ||
       { fail 工具Bot调得到 "工具的准备工作（before_mcp）失败，见 $PROBES_LOG 末尾：$(tail -c 200 "$PROBES_LOG" | tr '\n' ' ')"; return 0; }
@@ -333,22 +367,74 @@ probes_mcp() { # 工具 Bot 调得到：tools/list 有本插件工具，只读�
   fi
 }
 
+# 附加检查的子项：extra_check 里一项要验好几件事时，每件记一行 extra_item <PASS|FAIL|N/A> <子项> <说明>，
+# 结果行是“附加检查·<子项>”。子项名里不能有全角冒号和制表符，说明里的换行和制表符换成空格。
+extra_item() {
+  case "${1:-}" in
+    PASS | FAIL | N/A) ;;
+    *) echo "extra_item 的结果只能是 PASS、FAIL、N/A：${1:-}" >&2; return 2 ;;
+  esac
+  [[ $# -eq 3 && -n "$2" && "$2" != *：* && "$2" != *$'\t'* ]] || { echo "extra_item 用法：<PASS|FAIL|N/A> <子项> <说明>" >&2; return 2; }
+  [[ -n "${SMOKE_EXTRA_ITEMS:-}" ]] || { echo "extra_item 只能在 extra_check 里用" >&2; return 2; }
+  local why="${3//$'\n'/ }"
+  printf '%s\t%s\t%s\n' "$1" "$2" "${why//$'\t'/ }" >>"$SMOKE_EXTRA_ITEMS"
+  echo "$1 附加检查·$2：$why"
+}
+
+# 附加检查：六项之外插件自己要验的（发通知、经网关真调一次模型等），探针写了 extra_check 才有这一项。
+# 限时 EXTRA_TIMEOUT 秒（探针里设，默认 600）。记了子项时先逐行打印子项，再打一行汇总：钩子非 0 或任一子项 FAIL
+# 是 FAIL，子项全是 N/A 是 N/A，否则 PASS。
+probes_extra() {
+  local before out rc=0 verdict item why passed=0 total=0 broken=""
+  declare -F extra_check >/dev/null || return 0
+  say "附加检查（extra_check）"
+  before="$(wc -c <"$PROBES_LOG")"
+  SMOKE_EXTRA_ITEMS="$(mktemp "${SMOKE_STATE%/*}/extra-items.XXXXXX")"
+  export SMOKE_EXTRA_ITEMS
+  probes_hook extra_check "${EXTRA_TIMEOUT:-600}" || rc=$?
+  while IFS=$'\t' read -r verdict item why; do
+    total=$((total + 1))
+    case "$verdict" in
+      PASS) passed=$((passed + 1)); pass "附加检查·$item" "$why" ;;
+      FAIL) broken="$broken${broken:+、}$item"; fail "附加检查·$item" "$why" ;;
+      *) na "附加检查·$item" "$why" ;;
+    esac
+  done <"$SMOKE_EXTRA_ITEMS"
+  rm -f "$SMOKE_EXTRA_ITEMS"
+  unset SMOKE_EXTRA_ITEMS
+  out="$(tail -c "+$((before + 1))" "$PROBES_LOG" | tail -c 200 | tr '\n' ' ')"
+  if ((rc == 124)); then
+    fail 附加检查 "extra_check 超过 ${EXTRA_TIMEOUT:-600} 秒没跑完，见 $PROBES_LOG 末尾：$out"
+  elif ((rc != 0)); then
+    fail 附加检查 "extra_check 失败（退出 $rc），见 $PROBES_LOG 末尾：$out"
+  elif [[ -n "$broken" ]]; then
+    fail 附加检查 "子项失败：$broken"
+  elif ((total == 0)); then
+    pass 附加检查 "extra_check 通过${out:+：$out}"
+  elif ((passed == 0)); then
+    na 附加检查 "$total 个子项都没测（原因见各子项）"
+  else
+    pass 附加检查 "$passed 个子项通过，$((total - passed)) 个没测"
+  fi
+}
+
 probes_run() { # [探针名…]：跑探针项，不给名字就全跑
-  local name web=0 identity=0 mcp=0 data_write=0 data_check=0
+  local name web=0 identity=0 mcp=0 extra=0 data_write=0 data_check=0
   for name in "$@"; do
     case "$name" in
-      web_assert | identity_check | mcp | data_write | data_check) ;;
-      *) die "不认识的探针名：$name（可选 web_assert、identity_check、mcp、data_write、data_check）" ;;
+      web_assert | identity_check | mcp | extra_check | data_write | data_check) ;;
+      *) die "不认识的探针名：$name（可选 web_assert、identity_check、mcp、extra_check、data_write、data_check）" ;;
     esac
   done
   if (($# == 0)); then
-    web=1 identity=1 mcp=1 data_write=1 data_check=1
+    web=1 identity=1 mcp=1 extra=1 data_write=1 data_check=1
   else
     for name in "$@"; do
       case "$name" in
         web_assert) web=1 ;;
         identity_check) identity=1 ;;
         mcp) mcp=1 ;;
+        extra_check) extra=1 ;;
         data_write) data_write=1 ;;
         data_check) data_check=1 ;;
       esac
@@ -368,6 +454,7 @@ probes_run() { # [探针名…]：跑探针项，不给名字就全跑
     say "4. 工具 Bot 调得到"
     probes_mcp
   fi
+  ((extra)) && probes_extra
   if ((data_write || data_check)); then
     say "5. 数据写入与读回"
     if [[ "$DATA_NA" == 1 ]]; then
@@ -384,11 +471,11 @@ probes_run() { # [探针名…]：跑探针项，不给名字就全跑
   return 0
 }
 
-# shellcheck disable=SC2154 # root、state、instance 由 dev.sh 加载设置。
+# shellcheck disable=SC2154 # root、plugin、state、instance 由 dev.sh 加载设置。
 probes_cmd() { # dev.sh probes 的入口：对开发环境里装着的工作区插件跑探针，不起新实例、不卸载、不清理
   need jq nice
   need_env
-  probes_facts "$root"
+  probes_facts "$plugin"
   local result
   if ! result="$(api GET "/_wonton/api/plugins/$PROBES_PLUGIN_ID" 2>/dev/null)"; then
     [[ "$result" == *'"not_installed"'* ]] || die "查不到 $PROBES_PLUGIN_ID 装没装：$(error_text "$result")"
@@ -399,6 +486,7 @@ probes_cmd() { # dev.sh probes 的入口：对开发环境里装着的工作区�
   PROBES_LOG="$state/probes.log"
   : >"$PROBES_LOG"
   SMOKE_DIR="$root"
+  SMOKE_PLUGIN="$plugin"
   SMOKE_DEV_STATE="$state"
   # 标记文件跨几次 dev.sh probes 保留：先跑 data_write、改完插件再跑 data_check 也读得到。
   SMOKE_STATE="$state/probes-data-marker"
