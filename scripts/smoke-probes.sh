@@ -9,6 +9,8 @@
 #       data_check 升级/重装后读回核对。两个钩子都先重走一遍 OIDC（会话可能过期，
 #       钩子执行顺序不依赖 harness）。
 
+web_assert() { grep -qi 'gitea'; }   # stdin：应用真实页面
+
 wait_init() { # 升级=卸载(留数据)+新装：Gitea 数据卷里留着旧认证源（旧密钥），init 要等 gitea
 	# healthy 后才重写它。探针见"源已存在"就走链会撞上旧密钥，所以等 init 容器退出再走。
 	local inic i
@@ -24,7 +26,7 @@ wait_init() { # 升级=卸载(留数据)+新装：Gitea 数据卷里留着旧认
 gitea_session() { # <jar 文件>：jar 已登录就直接返回页面；否则核心登录 + 入口页 SSO 链。
 	# 链路要求 Accept: text/html：网关对无会话的网页请求按该头回 302 跳 SSO，否则回 401 JSON。
 	# 对已登录的 jar 重走 OAuth 链会被 Gitea 重开授权流程打断，所以先查会话。
-	local page base="${E2E_BASE:-${SMOKE_BASE:-}}" token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+	local page base="$SMOKE_BASE" token="$SMOKE_TOKEN"
 	page="$(curl -sS --noproxy '*' -L -b "$1" -c "$1" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
 		{ echo "应用首页拉不到"; return 1; }
 	grep -q 'href="/-/admin"' <<<"$page" && { printf '%s' "$page"; return 0; }
@@ -137,7 +139,7 @@ _mx_wait_mail() { # <插件 id> [轮数=30]：轮询主人的私聊，等这封�
 
 _owner_email() { # 主人资料里的内部邮箱（收件人用它，不猜域名）
   local base token me
-  base="${E2E_BASE:-${SMOKE_BASE:-}}"; token="${E2E_TOKEN:-${SMOKE_TOKEN:-}}"
+  base="$SMOKE_BASE"; token="$SMOKE_TOKEN"
   [[ -n "$base" && -n "$token" ]] || { echo "没有核心地址或主人令牌"; return 1; }
   me="$(curl -sS --noproxy '*' --fail-with-body -H "Authorization: Bearer $token" "$base/_wonton/api/me")" ||
     { echo "读不到主人资料（/_wonton/api/me）"; return 1; }
