@@ -5,10 +5,7 @@ scripts/dev-model.sh
 scripts/dev-resources.sh
 scripts/dev-kit.sh
 scripts/dev_settings.py
-<<<<<<< HEAD
-=======
 scripts/plugin_settings.py
->>>>>>> 7f8dd7d (chore(kit): 套件同步到模板 main)
 scripts/dev_test.sh
 scripts/check.sh
 scripts/publish.sh
